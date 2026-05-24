@@ -29,15 +29,26 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Generate launcher icons
+        run: |
+          for entry in "mdpi 48" "hdpi 72" "xhdpi 96" "xxhdpi 144" "xxxhdpi 192"; do
+            density=$(echo $entry | cut -d' ' -f1)
+            size=$(echo $entry | cut -d' ' -f2)
+            dir="sender/android/app/src/main/res/mipmap-${density}"
+            mkdir -p "$dir"
+            convert -size ${size}x${size} xc:"#1565C0" \
+              -fill white -gravity center \
+              -font DejaVu-Sans -pointsize $((size/3)) \
+              -annotate 0 "MIC" \
+              "${dir}/ic_launcher.png"
+          done
+
       - name: Flutter pub get
         working-directory: sender
         run: flutter pub get
 
-      - name: Verify Flutter setup
-        working-directory: sender
-        run: flutter doctor -v
-
       - name: Build debug APK
+
         working-directory: sender
         run: flutter build apk --debug
 
