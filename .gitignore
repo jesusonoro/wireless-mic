@@ -1,0 +1,35 @@
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+*.iml
+
+# Android
+sender/android/local.properties
+sender/android/.gradle/
+sender/android/captures/
+sender/android/app/GeneratedPluginRegistrant.java
+sender/android/app/src/main/kotlin/com/wirelessmic/sender/GeneratedPluginRegistrant.kt
+*.apk
+*.aab
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+dist/
+*.spec
+receiver/build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
