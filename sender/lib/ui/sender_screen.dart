@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:network_info_plus/network_info_plus.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../audio/audio_service.dart';
 
 class SenderScreen extends StatefulWidget {
@@ -21,6 +22,10 @@ class _SenderScreenState extends State<SenderScreen> {
   String _status = 'Ready';
   int _packetsSent = 0;
   String _myIp = 'loading…';
+  String? _ipError;
+  String? _portError;
+
+  static const _ipPattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$';
 
   @override
   void initState() {
@@ -39,12 +44,25 @@ class _SenderScreenState extends State<SenderScreen> {
     if (mounted) setState(() => _myIp = ip ?? 'unknown');
   }
 
+  String _friendlyError(Object e) {
+    final msg = e.toString();
+    if (msg.contains('SocketException') || msg.contains('NetworkUnreachable')) {
+      return "Can't reach the receiver. Check Wi-Fi and the IP address.";
+    }
+    if (msg.toLowerCase().contains('permission')) {
+      return 'Microphone permission required.';
+    }
+    return 'Something went wrong. Try again.';
+  }
+
   Future<void> _toggle() async {
     if (_streaming) {
       await _service.stopStreaming();
+      await WakelockPlus.disable();
       setState(() {
         _streaming = false;
         _status = 'Stopped';
+        _packetsSent = 0;
       });
       return;
     }
@@ -60,17 +78,31 @@ class _SenderScreenState extends State<SenderScreen> {
       setState(() => _status = 'Enter the receiver IP address');
       return;
     }
-    final port = int.tryParse(_portCtrl.text) ?? 7355;
+
+    if (!RegExp(_ipPattern).hasMatch(host)) {
+      setState(() => _ipError = 'Enter a valid IPv4 address (e.g. 192.168.1.100)');
+      return;
+    }
+
+    final portRaw = int.tryParse(_portCtrl.text);
+    if (portRaw == null || portRaw < 1 || portRaw > 65535) {
+      setState(() => _portError = 'Port must be a number between 1 and 65535');
+      return;
+    }
+    final port = portRaw;
 
     try {
       await _service.startStreaming(host: host, port: port);
+      await WakelockPlus.enable();
       setState(() {
         _streaming = true;
         _packetsSent = 0;
+        _ipError = null;
+        _portError = null;
         _status = 'Streaming to $host:$port';
       });
     } on Exception catch (e) {
-      setState(() => _status = 'Error: $e');
+      setState(() => _status = _friendlyError(e));
     }
   }
 
@@ -80,7 +112,7 @@ class _SenderScreenState extends State<SenderScreen> {
     return Scaffold(
       backgroundColor: cs.surface,
       appBar: AppBar(
-        title: const Text('Wireless Microphone'),
+        title: const Text('evermic'),
         backgroundColor: cs.surfaceContainerHighest,
       ),
       body: SafeArea(
@@ -100,11 +132,13 @@ class _SenderScreenState extends State<SenderScreen> {
               TextField(
                 controller: _hostCtrl,
                 enabled: !_streaming,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'Receiver IP Address',
                   hintText: '192.168.1.100',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.computer),
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.computer),
+                  errorText: _ipError,
+                  helperText: _streaming ? 'Stop streaming to change' : null,
                 ),
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
               ),
@@ -112,10 +146,12 @@ class _SenderScreenState extends State<SenderScreen> {
               TextField(
                 controller: _portCtrl,
                 enabled: !_streaming,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'UDP Port',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.settings_ethernet),
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.settings_ethernet),
+                  errorText: _portError,
+                  helperText: _streaming ? 'Stop streaming to change' : null,
                 ),
                 keyboardType: TextInputType.number,
               ),
@@ -133,7 +169,7 @@ class _SenderScreenState extends State<SenderScreen> {
               Text(
                 'Keep screen on while streaming.\nBoth devices must be on the same Wi-Fi.',
                 textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.outline),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
               ),
             ],
           ),
@@ -166,8 +202,8 @@ class _StatusCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       color: streaming
-          ? Colors.green.shade900.withOpacity(0.6)
-          : Colors.grey.shade900.withOpacity(0.4),
+          ? Colors.green.shade900.withValues(alpha: 0.6)
+          : Colors.grey.shade900.withValues(alpha: 0.4),
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
