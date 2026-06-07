@@ -252,6 +252,7 @@ class App:
         self.root.resizable(False, False)
         self._build()
         self._tick()
+        self.root.after(200, self._toggle)   # auto-start listening — zero-click
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
