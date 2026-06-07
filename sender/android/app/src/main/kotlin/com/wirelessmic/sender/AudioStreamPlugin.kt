@@ -28,8 +28,10 @@ class AudioStreamPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
             val svc = (binder as AudioForegroundService.LocalBinder).getService()
             audioService = svc
             isBound = true
-            svc.metricsListener = { seq, ts ->
-                eventSink?.success(mapOf("sequenceNumber" to seq, "timestampMs" to ts))
+            svc.metricsListener = { seq, ts, level ->
+                eventSink?.success(
+                    mapOf("sequenceNumber" to seq, "timestampMs" to ts, "level" to level)
+                )
             }
         }
 

@@ -37,8 +37,9 @@ class AudioForegroundService : Service() {
 
     @Volatile private var isStreaming = false
 
-    // Plugin sets this to receive metrics callbacks on the main thread
-    var metricsListener: ((sequenceNumber: Long, timestampMs: Long) -> Unit)? = null
+    // Plugin sets this to receive metrics callbacks on the main thread.
+    // level is the peak mic amplitude over the last window, normalized 0..1.
+    var metricsListener: ((sequenceNumber: Long, timestampMs: Long, level: Double) -> Unit)? = null
 
     companion object {
         const val ACTION_STOP = "com.wirelessmic.sender.STOP_STREAMING"
@@ -54,7 +55,7 @@ class AudioForegroundService : Service() {
         private const val BYTES_PER_SAMPLE = 2
         private const val CHUNK_MS = 10
         private const val HEADER_BYTES = 19
-        private const val METRICS_INTERVAL = 50L
+        private const val METRICS_INTERVAL = 5L     // ~50ms @ 10ms chunks → smooth VU meter
     }
 
     override fun onBind(intent: Intent): IBinder = binder
@@ -144,6 +145,7 @@ class AudioForegroundService : Service() {
         val audioBuffer = ByteArray(chunkBytes)
         val packetBytes = ByteArray(HEADER_BYTES + chunkBytes)
         var sequenceNumber = 0L
+        var windowPeak = 0          // loudest |sample| since the last metrics post
 
         while (isStreaming) {
             val read = audioRecord?.read(audioBuffer, 0, chunkBytes) ?: break
@@ -153,6 +155,16 @@ class AudioForegroundService : Service() {
             }
 
             val nowMs = System.currentTimeMillis()
+
+            // Track peak amplitude for the input-level meter (PCM16 little-endian).
+            var bi = 0
+            while (bi + 1 < read) {
+                val sample = ((audioBuffer[bi + 1].toInt() shl 8) or
+                              (audioBuffer[bi].toInt() and 0xFF)).toShort().toInt()
+                val mag = if (sample < 0) -sample else sample
+                if (mag > windowPeak) windowPeak = mag
+                bi += 2
+            }
 
             val bb = ByteBuffer.wrap(packetBytes).order(ByteOrder.BIG_ENDIAN)
             bb.putInt(sequenceNumber.toInt())
@@ -176,7 +188,9 @@ class AudioForegroundService : Service() {
             if (sequenceNumber % METRICS_INTERVAL == 0L) {
                 val seq = sequenceNumber
                 val ts = nowMs
-                mainHandler.post { metricsListener?.invoke(seq, ts) }
+                val level = windowPeak / 32768.0
+                windowPeak = 0
+                mainHandler.post { metricsListener?.invoke(seq, ts, level) }
             }
         }
     }

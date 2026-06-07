@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:network_info_plus/network_info_plus.dart';
@@ -27,6 +28,7 @@ class _SenderScreenState extends State<SenderScreen> {
   bool _showManual = false;
   String _status = 'Ready';
   int _packetsSent = 0;
+  double _level = 0;           // mic input level 0..1 for the VU meter
   String _myIp = 'loading…';
   DiscoveredReceiver? _receiver;
   String? _ipError;
@@ -43,6 +45,7 @@ class _SenderScreenState extends State<SenderScreen> {
       if (!mounted) return;
       setState(() {
         _packetsSent = (m['sequenceNumber'] as int?) ?? _packetsSent;
+        _level = (m['level'] as num?)?.toDouble() ?? _level;
       });
     });
   }
@@ -121,6 +124,7 @@ class _SenderScreenState extends State<SenderScreen> {
       _userStopped = true;            // wait for an explicit Start before reconnecting
       _status = 'Stopped';
       _packetsSent = 0;
+      _level = 0;
     });
   }
 
@@ -180,6 +184,10 @@ class _SenderScreenState extends State<SenderScreen> {
                 connecting: _connecting,
                 receiver: _receiver,
               ),
+              if (_streaming) ...[
+                const SizedBox(height: 16),
+                _MicLevel(level: _level),
+              ],
               const SizedBox(height: 24),
               FilledButton.icon(
                 onPressed: (_streaming || _receiver != null) && !_connecting
@@ -328,6 +336,95 @@ class _SpinnerRow extends StatelessWidget {
         ),
         const SizedBox(width: 12),
         Flexible(child: Text(text, textAlign: TextAlign.center)),
+      ],
+    );
+  }
+}
+
+/// Segmented mic input-level meter (VU style) with peak-hold.
+///
+/// Fed by the `level` field of the metrics stream (~20 Hz while streaming).
+/// Uses a perceptual sqrt curve so normal speech lights a useful range, fast
+/// attack so transients show instantly, and slow release + a peak dot so the
+/// motion reads cleanly.
+class _MicLevel extends StatefulWidget {
+  const _MicLevel({required this.level});
+  final double level;
+
+  @override
+  State<_MicLevel> createState() => _MicLevelState();
+}
+
+class _MicLevelState extends State<_MicLevel> {
+  static const _segments = 28;
+  double _smooth = 0;
+  double _peak = 0;
+
+  @override
+  void didUpdateWidget(covariant _MicLevel old) {
+    super.didUpdateWidget(old);
+    final shaped = math.sqrt(widget.level.clamp(0.0, 1.0));
+    // Fast attack (jump up), slow release (ease down). build() runs right after.
+    _smooth = shaped > _smooth ? shaped : _smooth * 0.72 + shaped * 0.28;
+    _peak = shaped > _peak ? shaped : _peak * 0.90;
+  }
+
+  Color _zone(double frac) {
+    if (frac < 0.60) return Colors.greenAccent;
+    if (frac < 0.85) return Colors.amber;
+    return Colors.redAccent;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final active = (_smooth * _segments).round();
+    final peakIdx = (_peak * _segments).clamp(0, _segments - 1).round();
+    final silent = _peak < 0.015;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.graphic_eq, size: 14, color: cs.onSurfaceVariant),
+            const SizedBox(width: 6),
+            Text(
+              'MIC INPUT',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: cs.onSurfaceVariant,
+                    letterSpacing: 1.5,
+                  ),
+            ),
+            const Spacer(),
+            if (silent)
+              Text(
+                'speak into the phone…',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: cs.onSurfaceVariant,
+                    ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        SizedBox(
+          height: 22,
+          child: Row(
+            children: List.generate(_segments, (i) {
+              final frac = i / (_segments - 1);
+              final color = _zone(frac);
+              final lit = i < active || i == peakIdx;
+              return Expanded(
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 1),
+                  decoration: BoxDecoration(
+                    color: lit ? color : color.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
       ],
     );
   }
