@@ -56,7 +56,7 @@ Key files:
 - `sender/android/app/src/main/AndroidManifest.xml` — FOREGROUND_SERVICE permissions + service declaration
 - `sender/lib/discovery/discovery_service.dart` — listens for receiver beacons (UDP :7356) → auto-connect
 - `sender/lib/ui/sender_screen.dart` — auto-discovery UI, VU meter, manual fallback
-- `receiver/receiver.py` — receiver + jitter buffer + discovery-beacon broadcaster; GUI auto-starts listening
+- `receiver/receiver.py` — receiver + jitter buffer + discovery-beacon broadcaster; dark Tkinter GUI auto-starts listening; `VUMeter` (Canvas) shows incoming level computed on-desktop from the received PCM (the wire carries no level field), `Receiver.take_level()` drains a per-frame peak accumulator
 
 ## Gotchas (hard-won)
 
@@ -70,3 +70,13 @@ Key files:
   and the sender never finds the receiver. Held by `AudioStreamPlugin` while discovering.
 - Discovery is UDP broadcast on **:7356** (audio is **:7355**). Beacon =
   `"EVERMIC1"` + audio-port(u16 BE) + namelen(u8) + hostname.
+- **The receiver UI needs Tk 8.6+.** macOS's system `python3` (CommandLineTools,
+  3.9.6) ships **Tk 8.5.9**, which renders the Tkinter window blank/garbled on
+  modern macOS — the body shows nothing but the native titlebar + button. Verify
+  with `python3 -c "import tkinter;print(tkinter.Tk().tk.call('info','patchlevel'))"`.
+  Build/run with a python.org or Homebrew Python (`brew install python@3.12
+  python-tk@3.12` → Tk 9.x). The bundled PyInstaller binaries embed whatever Tk
+  the building interpreter had, so build with a modern-Tk python too.
+- **PyInstaller + sounddevice:** bundle the PortAudio binary with
+  `--collect-all sounddevice` (both build scripts do). Without it the frozen app
+  starts then dies on `import sounddevice` (missing libportaudio).

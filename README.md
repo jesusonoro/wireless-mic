@@ -11,7 +11,7 @@ addresses to type. Just open the app on the phone and the receiver on the deskto
 Two components talking over UDP on the same LAN:
 
 - **`sender/`** — Flutter Android app. Captures mic via `AudioRecord` (Kotlin plugin), encodes as PCM-16LE, sends UDP packets. Auto-discovers the receiver, shows a live mic input-level meter.
-- **`receiver/`** — Python desktop app (Mac/Windows). Receives UDP packets, buffers with a jitter buffer, plays through system speakers via `sounddevice`. Broadcasts a discovery beacon so the phone finds it. Has a Tkinter GUI (auto-starts listening) and a `--headless` CLI mode.
+- **`receiver/`** — Python desktop app (Mac/Windows). Receives UDP packets, buffers with a jitter buffer, plays through system speakers via `sounddevice`. Broadcasts a discovery beacon so the phone finds it. Dark Tkinter GUI (auto-starts listening) with a live **28-segment incoming-audio VU meter** — peak/dB computed on the desktop from the received PCM — plus a `--headless` CLI mode.
 
 ## Repo structure
 
@@ -163,13 +163,38 @@ flutter build apk --debug
 ```
 
 **Standalone receiver binary:**
-```bash
-# macOS
-cd receiver && bash build_macos.sh     # → dist/receiver.app
 
-# Windows
-cd receiver && build_windows.bat       # → dist/receiver.exe
+PyInstaller does **not** cross-compile — build each OS's binary on that OS. The UI
+needs **Tk 8.6+**; use a python.org or Homebrew Python (macOS's system
+`/usr/bin/python3` ships the ancient Tk 8.5.9 and renders the window blank).
+
+```bash
+# macOS — needs a modern-Tk python (brew install python@3.12 python-tk@3.12)
+cd receiver && bash build_macos.sh     # → dist/receiver.app  (+ dist/receiver)
 ```
+
+**Windows — build on a Windows machine** (the `.exe` cannot be produced from macOS):
+
+1. Install **Python 3.10+** from <https://python.org> — tick *"Add python.exe to PATH"*.
+   The python.org build already includes Tk 8.6, so no extra Tk step is needed.
+2. Open *Command Prompt* in the `receiver\` folder and run:
+   ```bat
+   pip install -r requirements.txt
+   build_windows.bat
+   ```
+   → produces **`dist\receiver.exe`** (a single self-contained file).
+3. Run it: `dist\receiver.exe` (or double-click). It auto-starts listening and
+   broadcasting its beacon.
+
+Windows-specific notes:
+- **PortAudio is bundled automatically.** `build_windows.bat` passes
+  `--collect-all sounddevice`, which pulls in the PortAudio DLL `sounddevice`
+  needs — no manual DLL copying.
+- **Defender Firewall prompt.** On first launch Windows asks to allow Python/the
+  app through the firewall. Click **Allow access** (Private networks) so the
+  phone can reach **UDP 7355** (audio) and **UDP 7356** (discovery) inbound. If
+  you dismissed it, re-allow under *Windows Security → Firewall & network
+  protection → Allow an app through firewall*.
 
 ## Latency budget
 
@@ -195,9 +220,14 @@ Tune `JITTER_MS` in `receiver.py:39` (default `30`). Lower = less latency, more 
 
 ## Firewall setup
 
-**macOS:** System Settings → Network → Firewall → Allow incoming connections for Python
+The receiver needs **inbound UDP on 7355 (audio) and 7356 (discovery)**.
 
-**Windows:** Windows Defender Firewall → Allow an app → Python
+**macOS:** System Settings → Network → Firewall → Allow incoming connections for Python
+(or the built `receiver.app`).
+
+**Windows:** accept the Defender prompt on first launch (Allow access, Private
+networks), or add it manually: Windows Defender Firewall → *Allow an app through
+firewall* → Python / `receiver.exe`. UDP is inbound-only here — no outbound rule needed.
 
 ## Gotchas (hard-won)
 
@@ -244,4 +274,5 @@ Pairing and connect ports differ — that trips everyone up. `adb mdns services`
 | Android foreground service (background streaming) | done |
 | Zero-config LAN auto-discovery | done |
 | Mic input-level VU meter | done |
+| Receiver incoming-audio VU meter + dark redesign | done |
 | Opus compression | roadmap |
