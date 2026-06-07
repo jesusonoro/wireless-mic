@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -20,6 +21,7 @@ class AudioStreamPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
     private var audioService: AudioForegroundService? = null
     private var isBound = false
     private var eventSink: EventChannel.EventSink? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
@@ -50,7 +52,24 @@ class AudioStreamPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
+        releaseMulticastLock()
         unbind()
+    }
+
+    // ── Multicast/broadcast lock (needed to receive discovery beacons) ─────────
+
+    private fun acquireMulticastLock() {
+        if (multicastLock?.isHeld == true) return
+        val wifi = appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        multicastLock = wifi.createMulticastLock("evermic-discovery").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        if (multicastLock?.isHeld == true) multicastLock?.release()
+        multicastLock = null
     }
 
     // ── MethodCallHandler ─────────────────────────────────────────────────────
@@ -66,6 +85,14 @@ class AudioStreamPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
             }
             "stop" -> {
                 stopService()
+                result.success(null)
+            }
+            "acquireMulticastLock" -> {
+                acquireMulticastLock()
+                result.success(null)
+            }
+            "releaseMulticastLock" -> {
+                releaseMulticastLock()
                 result.success(null)
             }
             else -> result.notImplemented()

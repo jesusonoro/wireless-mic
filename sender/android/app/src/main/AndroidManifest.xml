@@ -20,7 +20,7 @@
     <uses-feature android:name="android.hardware.microphone" android:required="true" />
 
     <application
-        android:label="Wireless Mic"
+        android:label="EVERMIC"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 

@@ -38,6 +38,24 @@ CHANNELS     = 1
 DTYPE        = np.int16
 JITTER_MS    = 30          # default jitter buffer depth
 
+# ── Auto-discovery ──────────────────────────────────────────────────────────────
+# The receiver announces itself on the LAN so the sender finds it with zero config.
+# Beacon: b"EVERMIC1" (8) + audio_port uint16 BE (2) + name_len uint8 (1) + name.
+DISCOVERY_PORT = 7356
+DISCOVERY_MAGIC = b"EVERMIC1"
+
+
+def local_ip() -> str:
+    """Best-effort LAN IP (the address the sender will actually reach)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))      # no packets sent; just picks the route
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
 # ── Jitter buffer ──────────────────────────────────────────────────────────────
 
 class JitterBuffer:
@@ -91,6 +109,8 @@ class Receiver:
         self._sock: socket.socket | None = None
         self._stream: sd.OutputStream | None = None
         self._thread: threading.Thread | None = None
+        self._disc_sock: socket.socket | None = None
+        self._disc_thread: threading.Thread | None = None
         self.running = False
 
         # Metrics (read from UI thread)
@@ -144,6 +164,23 @@ class Receiver:
             pcm = np.frombuffer(payload, dtype="<i2").copy()
             self.jitter.push(pcm)
 
+    # ── Discovery beacon ───────────────────────────────────────────────────────
+
+    def _broadcast_loop(self, audio_port: int) -> None:
+        """Announce this receiver on the LAN broadcast address once a second."""
+        name = socket.gethostname().split(".")[0].encode("utf-8")[:255]
+        beacon = DISCOVERY_MAGIC + struct.pack(">H", audio_port) + bytes([len(name)]) + name
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self._disc_sock = sock
+        while self.running:
+            try:
+                sock.sendto(beacon, ("255.255.255.255", DISCOVERY_PORT))
+            except OSError:
+                pass
+            time.sleep(1.0)
+
     # ── Start / stop ───────────────────────────────────────────────────────────
 
     def start(self, port: int = DEFAULT_PORT) -> None:
@@ -165,15 +202,24 @@ class Receiver:
         self._thread = threading.Thread(target=self._recv_loop, daemon=True)
         self._thread.start()
 
+        self._disc_thread = threading.Thread(
+            target=self._broadcast_loop, args=(port,), daemon=True
+        )
+        self._disc_thread.start()
+
     def stop(self) -> None:
         self.running = False
         if self._sock:
             self._sock.close()
+        if self._disc_sock:
+            self._disc_sock.close()
         if self._stream:
             self._stream.stop()
             self._stream.close()
         if self._thread:
             self._thread.join(timeout=1.0)
+        if self._disc_thread:
+            self._disc_thread.join(timeout=1.5)
 
     def set_volume(self, v: float) -> None:
         self._volume = max(0.0, min(2.0, v))
@@ -200,7 +246,7 @@ class App:
     def __init__(self):
         self.receiver = Receiver()
         self.root = tk.Tk()
-        self.root.title("Wireless Mic Receiver")
+        self.root.title("EVERMIC Receiver")
         self.root.geometry("460x460")
         self.root.configure(bg=self.BG)
         self.root.resizable(False, False)
@@ -216,7 +262,7 @@ class App:
         mono_f  = tkfont.Font(family="Courier",   size=11)
         sm_f    = tkfont.Font(family="Helvetica", size=10)
 
-        tk.Label(self.root, text="Wireless Mic Receiver",
+        tk.Label(self.root, text="EVERMIC Receiver",
                  font=title_f, bg=self.BG, fg=self.FG).pack(pady=(16, 4))
 
         # ── Status indicator ──────────────────────────────────────────────────
@@ -277,12 +323,8 @@ class App:
                   relief="flat", padx=20, pady=10, cursor="hand2").pack(pady=(8, 4))
 
         # ── Local IP hint ──────────────────────────────────────────────────────
-        try:
-            import socket as _s
-            ip = _s.gethostbyname(_s.gethostname())
-        except Exception:
-            ip = "unknown"
-        tk.Label(self.root, text=f"This computer's IP: {ip}  — enter this in the Android app",
+        ip = local_ip()
+        tk.Label(self.root, text=f"Broadcasting as {socket.gethostname().split('.')[0]} · {ip}  — the app finds this automatically",
                  font=sm_f, bg=self.BG, fg="#94a3b8").pack(pady=(4, 12))
 
     def _metric_row(self, parent: tk.Frame, label: str, initial: str) -> tk.Label:
@@ -357,7 +399,8 @@ if __name__ == "__main__":
         port = int(sys.argv[idx + 1]) if idx >= 0 else DEFAULT_PORT
         r = Receiver()
         r.start(port)
-        print(f"Listening on UDP port {port}. Ctrl-C to stop.")
+        print(f"EVERMIC receiver listening on UDP {local_ip()}:{port}. Ctrl-C to stop.")
+        print(f"Broadcasting discovery beacon on :{DISCOVERY_PORT} — sender auto-connects.")
         try:
             while True:
                 time.sleep(1)

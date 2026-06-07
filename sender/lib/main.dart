@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 import 'ui/sender_screen.dart';
 
 void main() {
-  runApp(const WirelessMicApp());
+  runApp(const EvermicApp());
 }
 
-class WirelessMicApp extends StatelessWidget {
-  const WirelessMicApp({super.key});
+class EvermicApp extends StatelessWidget {
+  const EvermicApp({super.key});
 
   @override
   Widget build(BuildContext context) {
