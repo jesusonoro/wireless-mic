@@ -14,6 +14,7 @@ import android.os.Binder
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -45,6 +46,7 @@ class AudioForegroundService : Service() {
         const val EXTRA_PORT = "port"
         const val NOTIFICATION_ID = 1
         const val CHANNEL_ID = "evermic_mic"
+        const val TAG = "evermic"
 
         private const val SAMPLE_RATE = 16_000
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
@@ -116,19 +118,23 @@ class AudioForegroundService : Service() {
             if (AcousticEchoCanceler.isAvailable()) AcousticEchoCanceler.create(ar.audioSessionId)
             if (AutomaticGainControl.isAvailable()) AutomaticGainControl.create(ar.audioSessionId)
 
+            // Unconnected socket: send fire-and-forget with an explicit destination.
+            // A connected DatagramSocket would throw on send if the route ever
+            // hiccups (or surfaces an async ICMP error), killing the whole stream.
             val sock = DatagramSocket()
             val address = InetAddress.getByName(host)
-            sock.connect(address, port)
 
             audioRecord = ar
             socket = sock
             isStreaming = true
             ar.startRecording()
+            Log.i(TAG, "streaming started -> $host:$port (state=${ar.recordingState})")
 
             streamingThread = Thread({ streamingLoop(chunkBytes, address, port) }, "audio-stream")
                 .also { it.priority = Thread.MAX_PRIORITY; it.start() }
 
         } catch (e: Exception) {
+            Log.e(TAG, "startAudio failed", e)
             cleanupResources()
             stopSelf()
         }
@@ -141,7 +147,10 @@ class AudioForegroundService : Service() {
 
         while (isStreaming) {
             val read = audioRecord?.read(audioBuffer, 0, chunkBytes) ?: break
-            if (read <= 0) continue
+            if (read <= 0) {
+                if (read < 0) Log.w(TAG, "AudioRecord.read error $read")
+                continue
+            }
 
             val nowMs = System.currentTimeMillis()
 
@@ -157,7 +166,8 @@ class AudioForegroundService : Service() {
 
             try {
                 socket?.send(DatagramPacket(packetBytes, HEADER_BYTES + read, address, port))
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e(TAG, "send failed at seq=$sequenceNumber -> $address:$port", e)
                 break
             }
 
