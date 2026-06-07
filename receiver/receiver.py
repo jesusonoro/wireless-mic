@@ -121,6 +121,13 @@ class Receiver:
         self._last_seq   = -1
         self._volume     = 1.0
 
+        # Incoming-audio level for the VU meter. Computed here from the raw PCM
+        # we receive (the wire carries no level field). The network thread folds
+        # each packet's peak into _level_accum; the UI drains it once per frame
+        # via take_level() so no transient peak is missed between repaints.
+        self._level_accum = 0.0
+        self._level_lock  = threading.Lock()
+
     # ── Audio output callback (called from sounddevice worker thread) ──────────
 
     def _audio_cb(self, outdata: np.ndarray, frames: int, _time, _status):
@@ -163,6 +170,13 @@ class Receiver:
 
             pcm = np.frombuffer(payload, dtype="<i2").copy()
             self.jitter.push(pcm)
+
+            # Fold this packet's peak amplitude (0..1) into the meter accumulator.
+            if pcm.size:
+                peak = float(np.abs(pcm).max()) / 32768.0
+                with self._level_lock:
+                    if peak > self._level_accum:
+                        self._level_accum = peak
 
     # ── Discovery beacon ───────────────────────────────────────────────────────
 
@@ -220,6 +234,16 @@ class Receiver:
             self._thread.join(timeout=1.0)
         if self._disc_thread:
             self._disc_thread.join(timeout=1.5)
+        with self._level_lock:
+            self._level_accum = 0.0
+
+    def take_level(self) -> float:
+        """Return the peak incoming amplitude (0..1) since the last call, then
+        reset. Drained once per UI frame so brief peaks between repaints survive."""
+        with self._level_lock:
+            v = self._level_accum
+            self._level_accum = 0.0
+        return v
 
     def set_volume(self, v: float) -> None:
         self._volume = max(0.0, min(2.0, v))
@@ -232,111 +256,272 @@ class Receiver:
         return self.running and (time.time() - self.last_pkt_ts) < 2.0 and self.last_pkt_ts > 0
 
 
+# ── Theme ────────────────────────────────────────────────────────────────────
+
+class Theme:
+    """Single source of truth for the dark UI palette."""
+    BG       = "#0e1018"   # window background
+    CARD     = "#171a26"   # raised card
+    CARD_HI  = "#1f2333"   # card hover / inset
+    STROKE   = "#272c3d"   # hairline border
+    FG       = "#e6e9f2"   # primary text
+    MUTED    = "#7c8499"   # secondary text
+    FAINT    = "#4a5167"   # tertiary / disabled
+
+    GREEN    = "#3ddc84"
+    AMBER    = "#fbbf24"
+    RED      = "#f87171"
+    BLUE     = "#5b8cff"
+
+    # Pre-darkened "off" segment colors (Tkinter Canvas has no alpha).
+    GREEN_DIM = "#16301f"
+    AMBER_DIM = "#322713"
+    RED_DIM   = "#321b1b"
+
+
+# ── VU meter ─────────────────────────────────────────────────────────────────
+
+class VUMeter(tk.Canvas):
+    """A 28-segment green/amber/red VU meter with fast-attack / slow-release
+    smoothing and a peak-hold dot. Visual twin of the sender's `_MicLevel`.
+
+    It pulls the level itself, once per animation frame, from `level_source`
+    (a 0..1 callable) and animates at ~30 fps independent of the metric tick.
+    """
+
+    SEGMENTS  = 28
+    FPS_MS    = 33          # ~30 fps
+    GAP       = 3           # px between segments
+
+    def __init__(self, parent, level_source, **kw):
+        super().__init__(parent, highlightthickness=0, bd=0,
+                         bg=Theme.CARD, **kw)
+        self._level_source = level_source
+        self._smooth = 0.0
+        self._peak   = 0.0
+        self._segs   = []          # canvas rect ids, left→right
+        self._dot    = None
+        self.bind("<Configure>", lambda _e: self._layout())
+        self._animate()
+
+    # Segment color by position (matches sender zones).
+    @staticmethod
+    def _zone(frac: float, lit: bool) -> str:
+        if frac < 0.60:
+            return Theme.GREEN if lit else Theme.GREEN_DIM
+        if frac < 0.85:
+            return Theme.AMBER if lit else Theme.AMBER_DIM
+        return Theme.RED if lit else Theme.RED_DIM
+
+    def _layout(self):
+        """(Re)build the segment rectangles to fill the current width."""
+        self.delete("all")
+        self._segs = []
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w <= 1 or h <= 1:
+            return
+        n = self.SEGMENTS
+        seg_w = (w - self.GAP * (n - 1)) / n
+        for i in range(n):
+            x0 = i * (seg_w + self.GAP)
+            rect = self.create_rectangle(
+                x0, 0, x0 + seg_w, h, width=0, fill=Theme.GREEN_DIM,
+            )
+            self._segs.append(rect)
+        self._dot = self.create_rectangle(0, 0, 0, 0, width=0, fill="")
+        self._paint()
+
+    def _animate(self):
+        level = 0.0
+        try:
+            level = float(self._level_source() or 0.0)
+        except Exception:
+            level = 0.0
+        # Perceptual shaping + fast-attack / slow-release (sender's constants).
+        shaped = max(0.0, min(1.0, level)) ** 0.5
+        self._smooth = shaped if shaped > self._smooth else self._smooth * 0.72 + shaped * 0.28
+        self._peak   = shaped if shaped > self._peak   else self._peak * 0.90
+        self._paint()
+        self.after(self.FPS_MS, self._animate)
+
+    def _paint(self):
+        if not self._segs:
+            return
+        n = self.SEGMENTS
+        active  = round(self._smooth * n)
+        peak_i  = max(0, min(n - 1, round(self._peak * (n - 1))))
+        for i, rect in enumerate(self._segs):
+            frac = i / (n - 1)
+            lit  = i < active
+            self.itemconfigure(rect, fill=self._zone(frac, lit))
+        # Peak-hold dot: light the peak segment fully even when above the bar.
+        if self._peak > 0.015 and self._dot is not None:
+            x0, y0, x1, y1 = self.coords(self._segs[peak_i])
+            frac = peak_i / (n - 1)
+            self.coords(self._dot, x0, y0, x1, y1)
+            self.itemconfigure(self._dot, fill=self._zone(frac, True))
+
+
 # ── UI ─────────────────────────────────────────────────────────────────────────
 
 class App:
-    BG     = "#1a1a2e"
-    CARD   = "#16213e"
-    ACCENT = "#0f3460"
-    GREEN  = "#4ade80"
-    YELLOW = "#facc15"
-    RED    = "#f87171"
-    FG     = "#e2e8f0"
-
     def __init__(self):
         self.receiver = Receiver()
         self.root = tk.Tk()
         self.root.title("EVERMIC Receiver")
-        self.root.geometry("460x460")
-        self.root.configure(bg=self.BG)
-        self.root.resizable(False, False)
+        self.root.geometry("440x600")
+        self.root.minsize(380, 560)
+        self.root.configure(bg=Theme.BG)
         self._build()
         self._tick()
         self.root.after(200, self._toggle)   # auto-start listening — zero-click
 
+    # ── Reusable card container ────────────────────────────────────────────────
+
+    def _card(self, parent, **pack_kw):
+        outer = tk.Frame(parent, bg=Theme.STROKE)        # 1px hairline border
+        outer.pack(fill="x", padx=20, pady=8, **pack_kw)
+        inner = tk.Frame(outer, bg=Theme.CARD)
+        inner.pack(fill="both", expand=True, padx=1, pady=1)
+        return inner
+
     # ── Layout ────────────────────────────────────────────────────────────────
 
     def _build(self):
-        pad = dict(padx=16, pady=6)
+        T = Theme
+        self._title_f = tkfont.Font(family="Helvetica Neue", size=20, weight="bold")
+        self._lbl_f   = tkfont.Font(family="Helvetica Neue", size=10)
+        self._val_f   = tkfont.Font(family="Menlo",          size=13, weight="bold")
+        self._cap_f   = tkfont.Font(family="Helvetica Neue", size=9)
+        self._meta_f  = tkfont.Font(family="Menlo",          size=10)
 
-        title_f = tkfont.Font(family="Helvetica", size=15, weight="bold")
-        mono_f  = tkfont.Font(family="Courier",   size=11)
-        sm_f    = tkfont.Font(family="Helvetica", size=10)
+        # ── Header: brand + connection pill ─────────────────────────────────────
+        header = tk.Frame(self.root, bg=T.BG)
+        header.pack(fill="x", padx=20, pady=(18, 4))
+        tk.Label(header, text="EVERMIC", font=self._title_f,
+                 bg=T.BG, fg=T.FG).pack(side="left")
+        tk.Label(header, text="  RECEIVER", font=self._cap_f,
+                 bg=T.BG, fg=T.MUTED).pack(side="left", pady=(8, 0))
 
-        tk.Label(self.root, text="EVERMIC Receiver",
-                 font=title_f, bg=self.BG, fg=self.FG).pack(pady=(16, 4))
+        pill = tk.Frame(header, bg=T.CARD)
+        pill.pack(side="right", pady=(4, 0))
+        self._dot = tk.Label(pill, text="●", font=("Helvetica", 12),
+                             bg=T.CARD, fg=T.FAINT)
+        self._dot.pack(side="left", padx=(10, 5), pady=4)
+        self._status_lbl = tk.Label(pill, text="Idle", font=self._meta_f,
+                                    bg=T.CARD, fg=T.FG)
+        self._status_lbl.pack(side="left", padx=(0, 12), pady=4)
 
-        # ── Status indicator ──────────────────────────────────────────────────
-        status_frame = tk.Frame(self.root, bg=self.CARD, relief="flat")
-        status_frame.pack(fill="x", **pad)
+        # ── VU meter card (the centerpiece) ─────────────────────────────────────
+        meter_card = self._card(self.root)
+        head = tk.Frame(meter_card, bg=T.CARD)
+        head.pack(fill="x", padx=16, pady=(12, 2))
+        tk.Label(head, text="≈  INCOMING AUDIO", font=self._lbl_f,
+                 bg=T.CARD, fg=T.MUTED).pack(side="left")
+        self._db_lbl = tk.Label(head, text="—", font=self._meta_f,
+                                bg=T.CARD, fg=T.FAINT)
+        self._db_lbl.pack(side="right")
 
-        self._dot = tk.Label(status_frame, text="●", font=("Helvetica", 18),
-                             bg=self.CARD, fg=self.RED)
-        self._dot.pack(side="left", padx=(12, 6), pady=8)
+        self._meter = VUMeter(meter_card, self.receiver.take_level, height=44)
+        self._meter.pack(fill="x", padx=16, pady=(6, 6))
 
-        self._status_lbl = tk.Label(status_frame, text="Stopped",
-                                    font=mono_f, bg=self.CARD, fg=self.FG)
-        self._status_lbl.pack(side="left", pady=8)
+        self._meter_hint = tk.Label(meter_card, text="waiting for audio…",
+                                    font=self._cap_f, bg=T.CARD, fg=T.FAINT)
+        self._meter_hint.pack(anchor="w", padx=16, pady=(0, 12))
 
-        # ── Metrics ───────────────────────────────────────────────────────────
-        metrics_frame = tk.Frame(self.root, bg=self.CARD)
-        metrics_frame.pack(fill="x", **pad)
+        # ── Metrics card (3-up grid) ────────────────────────────────────────────
+        metrics_card = self._card(self.root)
+        grid = tk.Frame(metrics_card, bg=T.CARD)
+        grid.pack(fill="x", padx=8, pady=12)
+        grid.columnconfigure((0, 1, 2), weight=1, uniform="m")
+        self._latency_lbl = self._metric_cell(grid, 0, "LATENCY")
+        self._loss_lbl    = self._metric_cell(grid, 1, "PKT LOSS")
+        self._buffer_lbl  = self._metric_cell(grid, 2, "BUFFER")
 
-        self._latency_lbl = self._metric_row(metrics_frame, "Latency",   "—")
-        self._loss_lbl    = self._metric_row(metrics_frame, "Pkt loss",  "—")
-        self._buffer_lbl  = self._metric_row(metrics_frame, "Buffer",    "—")
+        # ── Controls card ───────────────────────────────────────────────────────
+        ctrl = self._card(self.root)
+        inner = tk.Frame(ctrl, bg=T.CARD)
+        inner.pack(fill="x", padx=16, pady=12)
 
-        # ── Config row ────────────────────────────────────────────────────────
-        cfg_frame = tk.Frame(self.root, bg=self.BG)
-        cfg_frame.pack(fill="x", **pad)
-
-        tk.Label(cfg_frame, text="Port:", bg=self.BG, fg=self.FG, font=sm_f).pack(side="left")
+        # Port
+        row1 = tk.Frame(inner, bg=T.CARD)
+        row1.pack(fill="x", pady=(0, 8))
+        tk.Label(row1, text="PORT", font=self._cap_f, bg=T.CARD, fg=T.MUTED,
+                 width=8, anchor="w").pack(side="left")
         self._port_var = tk.StringVar(value=str(DEFAULT_PORT))
-        tk.Entry(cfg_frame, textvariable=self._port_var, width=7,
-                 bg=self.ACCENT, fg=self.FG, insertbackground=self.FG,
-                 relief="flat").pack(side="left", padx=(4, 16))
+        tk.Entry(row1, textvariable=self._port_var, width=8, font=self._meta_f,
+                 bg=T.CARD_HI, fg=T.FG, insertbackground=T.FG,
+                 relief="flat", justify="center").pack(side="left", padx=4, ipady=3)
 
         # Volume
-        tk.Label(cfg_frame, text="Volume:", bg=self.BG, fg=self.FG, font=sm_f).pack(side="left")
+        row2 = tk.Frame(inner, bg=T.CARD)
+        row2.pack(fill="x", pady=(0, 4))
+        tk.Label(row2, text="VOLUME", font=self._cap_f, bg=T.CARD, fg=T.MUTED,
+                 width=8, anchor="w").pack(side="left")
         self._vol_var = tk.DoubleVar(value=1.0)
-        tk.Scale(cfg_frame, variable=self._vol_var, from_=0.0, to=2.0,
-                 resolution=0.05, orient="horizontal", length=120,
-                 bg=self.BG, fg=self.FG, highlightthickness=0, troughcolor=self.ACCENT,
-                 command=lambda v: self.receiver.set_volume(float(v))).pack(side="left")
+        self._vol_lbl = tk.Label(row2, text="1.0×", font=self._meta_f,
+                                 bg=T.CARD, fg=T.FG, width=5, anchor="e")
+        self._vol_lbl.pack(side="right")
+        tk.Scale(row2, variable=self._vol_var, from_=0.0, to=2.0,
+                 resolution=0.05, orient="horizontal", showvalue=False,
+                 bg=T.CARD, fg=T.FG, highlightthickness=0, troughcolor=T.CARD_HI,
+                 activebackground=T.GREEN, sliderrelief="flat", bd=0, width=12,
+                 command=self._on_volume).pack(side="left", fill="x", expand=True, padx=8)
 
         # Jitter buffer
-        jb_frame = tk.Frame(self.root, bg=self.BG)
-        jb_frame.pack(fill="x", **pad)
-        tk.Label(jb_frame, text="Jitter buffer (ms):", bg=self.BG, fg=self.FG, font=sm_f).pack(side="left")
+        row3 = tk.Frame(inner, bg=T.CARD)
+        row3.pack(fill="x")
+        tk.Label(row3, text="BUFFER", font=self._cap_f, bg=T.CARD, fg=T.MUTED,
+                 width=8, anchor="w").pack(side="left")
         self._jitter_var = tk.IntVar(value=JITTER_MS)
-        tk.Scale(jb_frame, variable=self._jitter_var, from_=10, to=120,
-                 resolution=10, orient="horizontal", length=200,
-                 bg=self.BG, fg=self.FG, highlightthickness=0, troughcolor=self.ACCENT,
-                 command=lambda v: self.receiver.set_jitter(int(float(v)))).pack(side="left")
-        self._jitter_lbl = tk.Label(jb_frame, text=f"{JITTER_MS}ms",
-                                    bg=self.BG, fg=self.FG, font=sm_f, width=5)
-        self._jitter_lbl.pack(side="left")
+        self._jitter_lbl = tk.Label(row3, text=f"{JITTER_MS} ms", font=self._meta_f,
+                                    bg=T.CARD, fg=T.FG, width=6, anchor="e")
+        self._jitter_lbl.pack(side="right")
+        tk.Scale(row3, variable=self._jitter_var, from_=10, to=120,
+                 resolution=10, orient="horizontal", showvalue=False,
+                 bg=T.CARD, fg=T.FG, highlightthickness=0, troughcolor=T.CARD_HI,
+                 activebackground=T.BLUE, sliderrelief="flat", bd=0, width=12,
+                 command=self._on_jitter).pack(side="left", fill="x", expand=True, padx=8)
 
         # ── Start/Stop button ─────────────────────────────────────────────────
         self._btn_text = tk.StringVar(value="Start Listening")
-        tk.Button(self.root, textvariable=self._btn_text, command=self._toggle,
-                  bg=self.GREEN, fg="#111", font=("Helvetica", 12, "bold"),
-                  relief="flat", padx=20, pady=10, cursor="hand2").pack(pady=(8, 4))
+        self._btn = tk.Button(self.root, textvariable=self._btn_text,
+                              command=self._toggle, bg=T.GREEN, fg="#08130c",
+                              activebackground=T.GREEN, activeforeground="#08130c",
+                              font=("Helvetica Neue", 13, "bold"),
+                              relief="flat", bd=0, padx=20, pady=11, cursor="hand2")
+        self._btn.pack(fill="x", padx=20, pady=(8, 6))
 
         # ── Local IP hint ──────────────────────────────────────────────────────
         ip = local_ip()
-        tk.Label(self.root, text=f"Broadcasting as {socket.gethostname().split('.')[0]} · {ip}  — the app finds this automatically",
-                 font=sm_f, bg=self.BG, fg="#94a3b8").pack(pady=(4, 12))
+        host = socket.gethostname().split('.')[0]
+        tk.Label(self.root,
+                 text=f"Broadcasting as {host} · {ip}\nthe phone finds this automatically",
+                 font=self._cap_f, bg=T.BG, fg=T.FAINT, justify="center"
+                 ).pack(pady=(2, 14))
 
-    def _metric_row(self, parent: tk.Frame, label: str, initial: str) -> tk.Label:
-        row = tk.Frame(parent, bg=self.CARD)
-        row.pack(fill="x", padx=12, pady=2)
-        tk.Label(row, text=f"{label}:", bg=self.CARD, fg="#94a3b8",
-                 font=("Helvetica", 10), width=10, anchor="w").pack(side="left")
-        lbl = tk.Label(row, text=initial, bg=self.CARD, fg=self.FG,
-                       font=("Courier", 10), anchor="w")
-        lbl.pack(side="left")
-        return lbl
+    def _metric_cell(self, parent, col: int, label: str) -> tk.Label:
+        cell = tk.Frame(parent, bg=Theme.CARD)
+        cell.grid(row=0, column=col, sticky="nsew", padx=8)
+        tk.Label(cell, text=label, font=self._cap_f,
+                 bg=Theme.CARD, fg=Theme.MUTED).pack()
+        val = tk.Label(cell, text="—", font=self._val_f,
+                       bg=Theme.CARD, fg=Theme.FAINT)
+        val.pack(pady=(3, 0))
+        return val
+
+    # ── Control callbacks ──────────────────────────────────────────────────────
+
+    def _on_volume(self, v):
+        f = float(v)
+        self.receiver.set_volume(f)
+        self._vol_lbl.config(text=f"{f:g}×")
+
+    def _on_jitter(self, v):
+        ms = int(float(v))
+        self.receiver.set_jitter(ms)
+        self._jitter_lbl.config(text=f"{ms} ms")
 
     # ── Toggle start/stop ─────────────────────────────────────────────────────
 
@@ -348,37 +533,47 @@ class App:
                 port = DEFAULT_PORT
             self.receiver.start(port)
             self._btn_text.set("Stop")
-            self._status_lbl.config(text=f"Listening on UDP :{port} …")
+            self._btn.config(bg=Theme.RED, fg="#1a0a0a", activebackground=Theme.RED)
+            self._status_lbl.config(text=f"Listening :{port}")
         else:
             self.receiver.stop()
             self._btn_text.set("Start Listening")
-            self._status_lbl.config(text="Stopped")
-            self._dot.config(fg=self.RED)
+            self._btn.config(bg=Theme.GREEN, fg="#08130c", activebackground=Theme.GREEN)
+            self._status_lbl.config(text="Idle")
+            self._dot.config(fg=Theme.FAINT)
 
     # ── Periodic UI refresh ───────────────────────────────────────────────────
 
     def _tick(self):
+        T = Theme
         r = self.receiver
         if r.running:
             connected = r.connected
-            self._dot.config(fg=self.GREEN if connected else self.YELLOW)
-            self._status_lbl.config(
-                text=("Connected ✓" if connected else "Waiting for sender …")
+            self._dot.config(fg=T.GREEN if connected else T.AMBER)
+            self._status_lbl.config(text="Connected ✓" if connected else "Waiting…")
+            self._meter_hint.config(
+                text="live" if connected else "waiting for audio…",
+                fg=T.GREEN if connected else T.FAINT,
             )
+
+            # dB readout from the meter's smoothed level.
+            sm = self._meter._smooth
+            self._db_lbl.config(
+                text=(f"{20 * np.log10(max(sm, 1e-4)):.0f} dB" if sm > 0.015 else "—"),
+                fg=T.FG if sm > 0.015 else T.FAINT,
+            )
+
             lat = r.latency_ms
-            lat_color = self.GREEN if lat < 80 else (self.YELLOW if lat < 150 else self.RED)
+            lat_color = T.GREEN if lat < 80 else (T.AMBER if lat < 150 else T.RED)
             self._latency_lbl.config(text=f"{lat} ms", fg=lat_color)
 
-            total = r.received
-            dropped = r.dropped
+            total, dropped = r.received, r.dropped
             loss_pct = (dropped / max(total + dropped, 1)) * 100
             self._loss_lbl.config(
-                text=f"{dropped} dropped / {total} total  ({loss_pct:.1f}%)",
-                fg=self.GREEN if loss_pct < 1 else (self.YELLOW if loss_pct < 5 else self.RED)
+                text=f"{loss_pct:.1f}%",
+                fg=T.GREEN if loss_pct < 1 else (T.AMBER if loss_pct < 5 else T.RED),
             )
-            self._buffer_lbl.config(text=f"{r.jitter.buffered_ms:.0f} ms")
-            jms = self._jitter_var.get()
-            self._jitter_lbl.config(text=f"{jms}ms")
+            self._buffer_lbl.config(text=f"{r.jitter.buffered_ms:.0f} ms", fg=T.FG)
 
         self.root.after(200, self._tick)
 
