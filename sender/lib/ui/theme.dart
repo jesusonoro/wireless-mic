@@ -41,7 +41,7 @@ BoxShadow neonGlow(
   double spread = 1,
 }) {
   return BoxShadow(
-    color: color.withOpacity(0.5),
+    color: color.withValues(alpha: 0.5),
     blurRadius: blur,
     spreadRadius: spread,
   );
