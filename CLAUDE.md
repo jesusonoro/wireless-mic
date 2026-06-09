@@ -50,13 +50,13 @@ Bump `org.jetbrains.kotlin.android` to `X.Y.Z` in `settings.gradle`.
 Flutter app in `sender/` with a native Android plugin for microphone audio streaming.
 
 Key files:
-- `sender/android/app/src/main/kotlin/com/wirelessmic/sender/AudioForegroundService.kt` — background audio streaming via ForegroundService; also computes per-chunk peak mic level for the meter
-- `sender/android/app/src/main/kotlin/com/wirelessmic/sender/AudioStreamPlugin.kt` — Flutter↔native bridge; holds the Wi-Fi `MulticastLock` during discovery
+- `sender/android/app/src/main/kotlin/com/wirelessmic/sender/AudioForegroundService.kt` — background audio streaming via ForegroundService; two capture paths: **MIC** (16 kHz mono, VOICE_COMMUNICATION source, voice DSP, 10 ms chunks) and **DJ** (two AudioRecords — mic at 48 kHz mono + playback capture at 48 kHz stereo via `AudioPlaybackCaptureConfiguration` — mixed with MUSIC_GAIN 0.85 / MIC_GAIN 1.0, streamed as 48 kHz stereo LE, 5 ms chunks); computes per-chunk peak for the VU meter
+- `sender/android/app/src/main/kotlin/com/wirelessmic/sender/AudioStreamPlugin.kt` — Flutter↔native bridge; `ActivityAware`; holds the Wi-Fi `MulticastLock` during discovery; exposes `startDj` which launches the system MediaProjection consent dialog
 - `sender/android/app/src/main/kotlin/com/wirelessmic/sender/MainActivity.kt` — creates notification channel
-- `sender/android/app/src/main/AndroidManifest.xml` — FOREGROUND_SERVICE permissions + service declaration
+- `sender/android/app/src/main/AndroidManifest.xml` — FOREGROUND_SERVICE + FOREGROUND_SERVICE_MEDIA_PROJECTION permissions; service declared with `foregroundServiceType="microphone|mediaProjection"`
 - `sender/lib/discovery/discovery_service.dart` — listens for receiver beacons (UDP :7356) → auto-connect
-- `sender/lib/ui/sender_screen.dart` — auto-discovery UI, VU meter, manual fallback
-- `receiver/receiver.py` — receiver + jitter buffer + discovery-beacon broadcaster; dark Tkinter GUI auto-starts listening; `VUMeter` (Canvas) shows incoming level computed on-desktop from the received PCM (the wire carries no level field), `Receiver.take_level()` drains a per-frame peak accumulator
+- `sender/lib/ui/sender_screen.dart` — Mic/DJ SegmentedButton; DJ skips auto-connect (requires explicit Start to avoid an unprompted consent dialog)
+- `receiver/receiver.py` — receiver + jitter buffer + discovery-beacon broadcaster; format-aware: reads per-packet sample-rate + channel count from the wire header and reconfigures OutputStream/JitterBuffer on format change (was hardcoded 16 kHz mono); decodes interleaved stereo; dark Tkinter GUI + `VUMeter`
 
 ## Gotchas (hard-won)
 
@@ -80,3 +80,22 @@ Key files:
 - **PyInstaller + sounddevice:** bundle the PortAudio binary with
   `--collect-all sounddevice` (both build scripts do). Without it the frozen app
   starts then dies on `import sounddevice` (missing libportaudio).
+- **DJ mode — Android 14 FGS ordering:** the service must be started with
+  `foregroundServiceType` including `mediaProjection` *before* calling
+  `getMediaProjection()`, and a `MediaProjection.Callback` must be registered on
+  the projection object before creating the playback-capture `AudioRecord`. Skip
+  either step and the call throws on Android 14+.
+- **DJ mode — AudioPlaybackCapture opt-out:** apps may mark their audio stream
+  `ALLOW_CAPTURE_BY_NONE` (common in Spotify, DRM'd content). Those streams are
+  silently captured as silence — no error. YouTube-in-browser and local media files
+  work fine.
+- **DJ mode — MTU:** 48 kHz stereo uses 5 ms chunks (240 frames, 960-byte payload)
+  to stay under the ~1500-byte Ethernet MTU. A 10 ms chunk would be ~1920 bytes and
+  force IP fragmentation. Mic mode's 10 ms / 320-byte packet is safely under the limit.
+- **DJ mode — u16 sample-rate field:** 48000 is written as
+  `(48000 and 0xFFFF).toShort()` (two's complement wraps to -17536 signed). The
+  receiver decodes with `struct.unpack(">H", ...)` (unsigned) to recover 48000. A
+  naive signed `">h"` read would give -17536 and break resampling.
+- **DJ mode — no auto-connect:** discovery auto-connect is intentionally disabled in
+  DJ mode. Triggering `startDj` without a user gesture pops the system
+  screen-capture consent dialog unexpectedly. The user must tap Start explicitly.
