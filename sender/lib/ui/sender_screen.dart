@@ -7,6 +7,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../audio/audio_service.dart';
 import '../discovery/discovery_service.dart';
 
+enum CaptureMode { mic, dj }
+
 class SenderScreen extends StatefulWidget {
   const SenderScreen({super.key});
 
@@ -28,11 +30,12 @@ class _SenderScreenState extends State<SenderScreen> {
   bool _showManual = false;
   String _status = 'Ready';
   int _packetsSent = 0;
-  double _level = 0;           // mic input level 0..1 for the VU meter
+  double _level = 0;           // input level 0..1 for the VU meter
   String _myIp = 'loading…';
   DiscoveredReceiver? _receiver;
   String? _ipError;
   String? _portError;
+  CaptureMode _mode = CaptureMode.mic;
 
   static const _ipPattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$';
 
@@ -67,8 +70,11 @@ class _SenderScreenState extends State<SenderScreen> {
   void _onReceiverFound(DiscoveredReceiver r) {
     final isNew = _receiver?.host != r.host || _receiver?.port != r.port;
     _receiver = r;
-    if (!_streaming && !_userStopped && !_connecting) {
-      _connect(r);                       // zero-config auto-connect
+    // Only auto-connect in MIC mode. In DJ mode the user must press Start
+    // explicitly — auto-connecting would fire the system screen-capture consent
+    // dialog without any user gesture, which is intrusive.
+    if (_mode == CaptureMode.mic && !_streaming && !_userStopped && !_connecting) {
+      _connect(r);                       // zero-config auto-connect (mic only)
     } else if (isNew && mounted) {
       setState(() {});                   // refresh the "found" banner
     }
@@ -100,14 +106,28 @@ class _SenderScreenState extends State<SenderScreen> {
     }
 
     try {
-      await _service.startStreaming(host: r.host, port: r.port);
-      await WakelockPlus.enable();
-      setState(() {
-        _streaming = true;
-        _connecting = false;
-        _packetsSent = 0;
-        _status = 'Connected to ${r.name}';
-      });
+      if (_mode == CaptureMode.dj) {
+        await _service.startDj(host: r.host, port: r.port);
+        // startDj returns before the system consent dialog resolves; streaming
+        // state is optimistic. If the user denies screen capture no packets will
+        // arrive (counter stays 0) and they can Stop and retry.
+        await WakelockPlus.enable();
+        setState(() {
+          _streaming = true;
+          _connecting = false;
+          _packetsSent = 0;
+          _status = 'Starting DJ — accept the screen-capture prompt';
+        });
+      } else {
+        await _service.startStreaming(host: r.host, port: r.port);
+        await WakelockPlus.enable();
+        setState(() {
+          _streaming = true;
+          _connecting = false;
+          _packetsSent = 0;
+          _status = 'Connected to ${r.name}';
+        });
+      }
     } on Exception catch (e) {
       setState(() {
         _connecting = false;
@@ -159,6 +179,7 @@ class _SenderScreenState extends State<SenderScreen> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final isDj = _mode == CaptureMode.dj;
     return Scaffold(
       backgroundColor: cs.surface,
       appBar: AppBar(
@@ -171,7 +192,12 @@ class _SenderScreenState extends State<SenderScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _StatusCard(streaming: _streaming, status: _status, packets: _packetsSent),
+              _StatusCard(
+                streaming: _streaming,
+                status: _status,
+                packets: _packetsSent,
+                mode: _mode,
+              ),
               const SizedBox(height: 12),
               Text(
                 'Phone Wi-Fi IP: $_myIp',
@@ -186,19 +212,43 @@ class _SenderScreenState extends State<SenderScreen> {
               ),
               if (_streaming) ...[
                 const SizedBox(height: 16),
-                _MicLevel(level: _level),
+                _MicLevel(
+                  level: _level,
+                  label: isDj ? 'OUTPUT' : 'MIC INPUT',
+                  hint: isDj ? 'play music + talk…' : 'speak into the phone…',
+                ),
               ],
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
+              // Mode toggle — disabled while streaming or connecting
+              SegmentedButton<CaptureMode>(
+                segments: const [
+                  ButtonSegment(
+                    value: CaptureMode.mic,
+                    icon: Icon(Icons.mic),
+                    label: Text('Mic'),
+                  ),
+                  ButtonSegment(
+                    value: CaptureMode.dj,
+                    icon: Icon(Icons.album),
+                    label: Text('DJ'),
+                  ),
+                ],
+                selected: {_mode},
+                onSelectionChanged: (_streaming || _connecting)
+                    ? null
+                    : (s) => setState(() => _mode = s.first),
+              ),
+              const SizedBox(height: 16),
               FilledButton.icon(
                 onPressed: (_streaming || _receiver != null) && !_connecting
                     ? _onMainButton
                     : null,
-                icon: Icon(_streaming ? Icons.stop : Icons.mic),
+                icon: Icon(_streaming ? Icons.stop : (isDj ? Icons.album : Icons.mic)),
                 label: Text(
                   _streaming
-                      ? 'Stop Streaming'
+                      ? (isDj ? 'Stop DJ' : 'Stop Streaming')
                       : _receiver != null
-                          ? 'Start Streaming'
+                          ? (isDj ? 'Start DJ' : 'Start Streaming')
                           : 'Searching…',
                 ),
                 style: FilledButton.styleFrom(
@@ -297,7 +347,7 @@ class _DiscoveryBanner extends StatelessWidget {
     Widget content;
     if (streaming && receiver != null) {
       content = Text('Connected to ${receiver!.name}',
-          style: TextStyle(color: Colors.greenAccent));
+          style: const TextStyle(color: Colors.greenAccent));
     } else if (connecting) {
       content = const _SpinnerRow(text: 'Connecting…');
     } else if (receiver != null) {
@@ -341,15 +391,21 @@ class _SpinnerRow extends StatelessWidget {
   }
 }
 
-/// Segmented mic input-level meter (VU style) with peak-hold.
+/// Segmented input-level meter (VU style) with peak-hold.
 ///
 /// Fed by the `level` field of the metrics stream (~20 Hz while streaming).
 /// Uses a perceptual sqrt curve so normal speech lights a useful range, fast
 /// attack so transients show instantly, and slow release + a peak dot so the
 /// motion reads cleanly.
 class _MicLevel extends StatefulWidget {
-  const _MicLevel({required this.level});
+  const _MicLevel({
+    required this.level,
+    required this.label,
+    required this.hint,
+  });
   final double level;
+  final String label;
+  final String hint;
 
   @override
   State<_MicLevel> createState() => _MicLevelState();
@@ -389,7 +445,7 @@ class _MicLevelState extends State<_MicLevel> {
             Icon(Icons.graphic_eq, size: 14, color: cs.onSurfaceVariant),
             const SizedBox(width: 6),
             Text(
-              'MIC INPUT',
+              widget.label,
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
                     color: cs.onSurfaceVariant,
                     letterSpacing: 1.5,
@@ -398,7 +454,7 @@ class _MicLevelState extends State<_MicLevel> {
             const Spacer(),
             if (silent)
               Text(
-                'speak into the phone…',
+                widget.hint,
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
                       color: cs.onSurfaceVariant,
                     ),
@@ -435,14 +491,22 @@ class _StatusCard extends StatelessWidget {
     required this.streaming,
     required this.status,
     required this.packets,
+    required this.mode,
   });
 
   final bool streaming;
   final String status;
   final int packets;
+  final CaptureMode mode;
 
   @override
   Widget build(BuildContext context) {
+    final IconData icon;
+    if (mode == CaptureMode.dj) {
+      icon = streaming ? Icons.album : Icons.album_outlined;
+    } else {
+      icon = streaming ? Icons.mic : Icons.mic_off;
+    }
     return Card(
       color: streaming
           ? Colors.green.shade900.withValues(alpha: 0.6)
@@ -452,7 +516,7 @@ class _StatusCard extends StatelessWidget {
         child: Column(
           children: [
             Icon(
-              streaming ? Icons.mic : Icons.mic_off,
+              icon,
               size: 56,
               color: streaming ? Colors.greenAccent : Colors.grey,
             ),
@@ -461,7 +525,7 @@ class _StatusCard extends StatelessWidget {
             if (streaming) ...[
               const SizedBox(height: 4),
               Text(
-                '$packets packets sent  ·  ${(packets * 10 / 1000).toStringAsFixed(1)}s',
+                '$packets packets sent  ·  ${(packets * (mode == CaptureMode.dj ? 5 : 10) / 1000).toStringAsFixed(1)}s',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],

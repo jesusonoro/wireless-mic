@@ -15,4 +15,8 @@ class AudioService {
   Future<void> stopStreaming() {
     return _method.invokeMethod('stop');
   }
+
+  Future<void> startDj({required String host, required int port}) {
+    return _method.invokeMethod('startDj', {'host': host, 'port': port});
+  }
 }
