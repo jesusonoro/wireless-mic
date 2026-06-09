@@ -1,17 +1,21 @@
-# EVERMIC — Wireless Microphone
+# EVERDJ — Wireless Microphone / DJ Streamer
 
-Turns an Android phone into a wireless microphone for your computer. Speak into the
-phone, the audio comes out the computer's speakers. Target latency: **~60ms**.
+Turns an Android phone into a wireless microphone (or DJ audio source) for your computer.
+Speak into the phone, the audio comes out the computer's speakers. Target latency: **~60ms**.
 
 **Zero config:** both ends find each other automatically on the same Wi-Fi — no IP
 addresses to type. Just open the app on the phone and the receiver on the desktop.
+
+The app display name is **EVERDJ**. The UI is in Spanish with a neon DJ-club visual theme.
+The internal Android package id, wire-protocol magic, and log tag still use legacy names —
+see the "Intentionally kept legacy names" note in the Gotchas section.
 
 ## What it is
 
 Two components talking over UDP on the same LAN:
 
-- **`sender/`** — Flutter Android app. Captures mic via `AudioRecord` (Kotlin plugin), encodes as PCM-16LE, sends UDP packets. Auto-discovers the receiver, shows a live mic input-level meter.
-- **`receiver/`** — Python desktop app (Mac/Windows). Receives UDP packets, buffers with a jitter buffer, plays through system speakers via `sounddevice`. Broadcasts a discovery beacon so the phone finds it. Dark Tkinter GUI (auto-starts listening) with a live **28-segment incoming-audio VU meter** — peak/dB computed on the desktop from the received PCM — plus a `--headless` CLI mode.
+- **`sender/`** — Flutter Android app (branded **EVERDJ**). Captures mic via `AudioRecord` (Kotlin plugin), encodes as PCM-16LE, sends UDP packets. Auto-discovers the receiver, shows a live mic input-level meter. Neon DJ-club UI in Spanish; supports MIC mode (16 kHz mono) and DJ mode (48 kHz stereo mic + device playback mix).
+- **`receiver/`** — Python desktop app (Mac/Windows), window title **EVERDJ Receptor**. Receives UDP packets, buffers with a jitter buffer, plays through system speakers via `sounddevice`. Broadcasts a discovery beacon so the phone finds it. Dark Tkinter GUI in Spanish (auto-starts listening) with a live **28-segment incoming-audio VU meter** — peak/dB computed on the desktop from the received PCM — plus a `--headless` CLI mode.
 
 ## Repo structure
 
@@ -121,7 +125,7 @@ The Kotlin plugin (`AudioStreamPlugin`) is registered in `MainActivity.kt`.
 Android `Service` that owns the entire audio/UDP loop so streaming survives screen lock, backgrounding, and app switches.
 
 - Started with `startForegroundService()` by `AudioStreamPlugin` when Dart calls `start`.
-- Calls `startForeground()` immediately in `onStartCommand`, showing a persistent notification ("evermic — Streaming…") with a **Stop** action.
+- Calls `startForeground()` immediately in `onStartCommand`, showing a persistent notification ("EVERDJ — Transmitiendo…") with a **Detener** action.
 - The Stop action delivers `ACTION_STOP` back to the service, which shuts down cleanly and dismisses the notification.
 - `AudioStreamPlugin` binds to the service via `ServiceConnection` to wire up the `metricsListener` callback, which forwards `{sequenceNumber, timestampMs}` events to the Dart `EventChannel`.
 - Dart `AudioService.startStreaming()` / `stopStreaming()` API is unchanged.
@@ -138,7 +142,7 @@ python receiver.py        # auto-starts listening + broadcasting its beacon
 **Sender (Android):**
 1. Download `wireless-mic-debug.apk` from GitHub Actions artifacts, or build locally.
 2. Install (enable *Install from unknown sources*).
-3. Open **EVERMIC**, grant the microphone permission. It auto-finds the receiver and
+3. Open **EVERDJ**, grant the microphone permission. It auto-finds the receiver and
    starts streaming — speak into the phone, audio comes out the desktop speakers.
 
 Both devices must be on the same Wi-Fi. Allow UDP ports **7355** (audio) and **7356**
@@ -230,6 +234,13 @@ networks), or add it manually: Windows Defender Firewall → *Allow an app throu
 firewall* → Python / `receiver.exe`. UDP is inbound-only here — no outbound rule needed.
 
 ## Gotchas (hard-won)
+
+- **Intentionally kept legacy names.** The following identifiers were NOT renamed during the EVERDJ rebrand and must stay as-is — sender and receiver must agree on wire bytes, and renaming package/channel ids would break existing installs:
+  - Android package / applicationId: `com.wirelessmic.sender` (and Kotlin source path `.../com/wirelessmic/sender/`)
+  - Method/event channels: `com.wirelessmic/audio`, `com.wirelessmic/audio_events`
+  - Wire-protocol discovery beacon magic: `EVERMIC1` (8 bytes on the wire — not user-visible)
+  - Android log tag: `evermic` (`adb logcat | grep evermic`)
+  - Notification channel id: `evermic_mic`
 
 - **Never `connect()` the sender's `DatagramSocket`.** A *connected* UDP socket throws
   on `send()` the moment the route blips or an async ICMP error arrives — which here

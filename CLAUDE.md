@@ -1,4 +1,4 @@
-# evermic — Claude Working Notes
+# EVERDJ — Claude Working Notes
 
 ## Build workflow
 
@@ -42,6 +42,31 @@ Module was compiled with an incompatible version of Kotlin.
 The binary version of its metadata is X.Y.Z, expected version is A.B.C.
 ```
 Bump `org.jetbrains.kotlin.android` to `X.Y.Z` in `settings.gradle`.
+
+---
+
+## Brand & UI
+
+The app display name is **EVERDJ** (rebranded from EVERMIC). The entire UI is in Spanish (informal, energetic register) — both the Flutter sender and the Python receiver. Visual theme: neon DJ-club — near-black bg `#0A0A0F`, neon magenta `#FF2D95` / cyan `#00E5FF` / violet `#7C4DFF`, magenta→cyan→violet brand gradient, glow + animation.
+
+- Neon theme palette, brand gradient, glow helper, and `buildEverdjTheme()` live in `sender/lib/ui/theme.dart`.
+- Flutter dependencies: `flutter_animate`, `google_fonts`.
+- Fonts **Orbitron 700** and **Rajdhani 500/600/700** bundled as assets under `sender/assets/fonts/` (offline-safe — gig Wi-Fi often has no internet).
+- Neon vinyl-disc launcher icon + splash via Android adaptive vector drawables (`res/drawable/ic_launcher_foreground.xml`, `ic_launcher_background.xml`, `splash_logo.xml`, `mipmap-anydpi-v26/ic_launcher*.xml`, `values/colors.xml`); legacy `mipmap-*/ic_launcher.png` kept as the pre-API-26 fallback.
+- Flutter app class: `EverdjApp` (in `main.dart`).
+
+### Intentionally kept legacy names
+
+These identifiers were NOT renamed during the rebrand. Do not "fix" them — the wire protocol and Android package id must stay stable:
+
+| Identifier | Where used |
+|---|---|
+| `com.wirelessmic.sender` | Android applicationId + Kotlin source path |
+| `com.wirelessmic/audio` | MethodChannel name |
+| `com.wirelessmic/audio_events` | EventChannel name |
+| `EVERMIC1` | Discovery beacon magic (8 wire bytes — not user-visible) |
+| `evermic` | Android log tag (`adb logcat \| grep evermic`) |
+| `evermic_mic` | Notification channel id |
 
 ---
 
