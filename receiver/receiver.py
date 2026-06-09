@@ -59,22 +59,26 @@ def local_ip() -> str:
 # ── Jitter buffer ──────────────────────────────────────────────────────────────
 
 class JitterBuffer:
-    """Thread-safe ring buffer of int16 samples."""
+    """Thread-safe ring buffer of int16 frames (interleaved channels)."""
 
-    def __init__(self, target_ms: int, sample_rate: int = SAMPLE_RATE):
-        self._target_samples = int(target_ms * sample_rate / 1000)
+    def __init__(self, target_ms: int, sample_rate: int = SAMPLE_RATE,
+                 channels: int = CHANNELS):
+        self._sample_rate = sample_rate
+        self._channels = channels
+        self._target_frames = int(target_ms * sample_rate / 1000)
         self._buf: collections.deque[np.ndarray] = collections.deque()
-        self._total: int = 0
+        self._total: int = 0   # frames
         self._lock = threading.Lock()
 
     def push(self, pcm: np.ndarray) -> None:
+        """pcm must be shaped (N, channels) int16."""
         with self._lock:
             self._buf.append(pcm)
             self._total += len(pcm)
 
     def pull(self, n: int) -> np.ndarray:
-        """Return exactly n samples (zero-pad if starved)."""
-        out = np.zeros(n, dtype=DTYPE)
+        """Return exactly n frames shaped (n, channels); zero-pad if starved."""
+        out = np.zeros((n, self._channels), dtype=DTYPE)
         pos = 0
         with self._lock:
             while pos < n and self._buf:
@@ -95,10 +99,10 @@ class JitterBuffer:
     @property
     def buffered_ms(self) -> float:
         with self._lock:
-            return self._total * 1000 / SAMPLE_RATE
+            return self._total * 1000 / self._sample_rate
 
     def set_target_ms(self, ms: int) -> None:
-        self._target_samples = int(ms * SAMPLE_RATE / 1000)
+        self._target_frames = int(ms * self._sample_rate / 1000)
 
 
 # ── Receiver ───────────────────────────────────────────────────────────────────
@@ -112,6 +116,12 @@ class Receiver:
         self._disc_sock: socket.socket | None = None
         self._disc_thread: threading.Thread | None = None
         self.running = False
+
+        # Active stream format (updated on first packet or format change).
+        self._active_sr: int = SAMPLE_RATE
+        self._active_ch: int = CHANNELS
+        # Guards _stream and jitter swaps between _recv_loop and _audio_cb.
+        self._stream_lock = threading.Lock()
 
         # Metrics (read from UI thread)
         self.received    = 0
@@ -131,11 +141,15 @@ class Receiver:
     # ── Audio output callback (called from sounddevice worker thread) ──────────
 
     def _audio_cb(self, outdata: np.ndarray, frames: int, _time, _status):
-        samples = self.jitter.pull(frames)
+        # Read the jitter reference atomically; do the pull outside the lock
+        # so this real-time callback is not blocked by stream reconfiguration.
+        with self._stream_lock:
+            jitter = self.jitter
+        buf = jitter.pull(frames)
         # Apply volume
         if self._volume != 1.0:
-            samples = (samples * self._volume).astype(DTYPE)
-        outdata[:, 0] = samples
+            buf = (buf * self._volume).astype(DTYPE)
+        outdata[:] = buf
 
     # ── Network receive loop ───────────────────────────────────────────────────
 
@@ -168,8 +182,50 @@ class Receiver:
             self._last_seq = seq
             self.received += 1
 
-            pcm = np.frombuffer(payload, dtype="<i2").copy()
-            self.jitter.push(pcm)
+            # Decode interleaved int16 payload; reshape to (frames, channels).
+            raw = np.frombuffer(payload, dtype="<i2").copy()
+            if _ch > 1:
+                # Drop any trailing incomplete frame.
+                n_frames = len(raw) // _ch
+                pcm = raw[:n_frames * _ch].reshape(n_frames, _ch)
+            else:
+                pcm = raw.reshape(-1, 1)
+
+            # Reconfigure the output stream when the format changes.
+            if (_sr, _ch) != (self._active_sr, self._active_ch):
+                # Grab and clear the old stream/jitter outside the lock so
+                # _audio_cb can finish its current callback before we stop().
+                with self._stream_lock:
+                    old_stream = self._stream
+                    new_jitter = JitterBuffer(JITTER_MS, _sr, _ch)
+                    self._active_sr = _sr
+                    self._active_ch = _ch
+                    self.jitter = new_jitter
+                    self._stream = None   # _audio_cb won't be called once stopped
+
+                if old_stream is not None:
+                    try:
+                        old_stream.stop()
+                        old_stream.close()
+                    except Exception as exc:
+                        print(f"[evermic] stream close error during reconfigure: {exc}")
+
+                try:
+                    new_stream = sd.OutputStream(
+                        samplerate=_sr,
+                        channels=_ch,
+                        dtype=DTYPE,
+                        blocksize=int(_sr * 0.010),
+                        callback=self._audio_cb,
+                    )
+                    new_stream.start()
+                    with self._stream_lock:
+                        self._stream = new_stream
+                except Exception as exc:
+                    print(f"[evermic] stream open error during reconfigure: {exc}")
+
+            with self._stream_lock:
+                self.jitter.push(pcm)
 
             # Fold this packet's peak amplitude (0..1) into the meter accumulator.
             if pcm.size:
