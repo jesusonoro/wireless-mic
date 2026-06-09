@@ -1,25 +1,20 @@
 import 'package:flutter/material.dart';
 import 'ui/sender_screen.dart';
+import 'ui/theme.dart';
 
 void main() {
-  runApp(const EvermicApp());
+  runApp(const EverdjApp());
 }
 
-class EvermicApp extends StatelessWidget {
-  const EvermicApp({super.key});
+class EverdjApp extends StatelessWidget {
+  const EverdjApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'evermic',
+      title: 'EVERDJ',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF1565C0),
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
+      theme: buildEverdjTheme(),
       home: const SenderScreen(),
     );
   }

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Outer neon ring: filled circle r=80 centered at 100,100 -->
+    <!-- M 20,100  a 80,80 0 1,0 160,0  a 80,80 0 1,0 -160,0 -->
+    <path android:pathData="M20,100 a80,80 0 1,0 160,0 a80,80 0 1,0 -160,0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="20"
+                android:startY="100"
+                android:endX="180"
+                android:endY="100"
+                android:startColor="#FFFF2D95"
+                android:centerColor="#FF00E5FF"
+                android:endColor="#FF7C4DFF" />
+        </aapt:attr>
+    </path>
+
+    <!-- Dark disc body: r=68 -->
+    <!-- M 32,100  a 68,68 0 1,0 136,0  a 68,68 0 1,0 -136,0 -->
+    <path
+        android:pathData="M32,100 a68,68 0 1,0 136,0 a68,68 0 1,0 -136,0"
+        android:fillColor="#FF0A0A0F" />
+
+    <!-- Groove ring 1 outer: r=54 -->
+    <!-- M 46,100  a 54,54 0 1,0 108,0  a 54,54 0 1,0 -108,0 -->
+    <path
+        android:pathData="M46,100 a54,54 0 1,0 108,0 a54,54 0 1,0 -108,0"
+        android:fillColor="#FF1A1A24" />
+
+    <!-- Groove ring 1 inner punch: r=50 -->
+    <!-- M 50,100  a 50,50 0 1,0 100,0  a 50,50 0 1,0 -100,0 -->
+    <path
+        android:pathData="M50,100 a50,50 0 1,0 100,0 a50,50 0 1,0 -100,0"
+        android:fillColor="#FF0A0A0F" />
+
+    <!-- Groove ring 2 outer: r=40 -->
+    <!-- M 60,100  a 40,40 0 1,0 80,0  a 40,40 0 1,0 -80,0 -->
+    <path
+        android:pathData="M60,100 a40,40 0 1,0 80,0 a40,40 0 1,0 -80,0"
+        android:fillColor="#FF1A1A24" />
+
+    <!-- Groove ring 2 inner punch: r=36 -->
+    <!-- M 64,100  a 36,36 0 1,0 72,0  a 36,36 0 1,0 -72,0 -->
+    <path
+        android:pathData="M64,100 a36,36 0 1,0 72,0 a36,36 0 1,0 -72,0"
+        android:fillColor="#FF0A0A0F" />
+
+    <!-- Center hole background: r=22 -->
+    <!-- M 78,100  a 22,22 0 1,0 44,0  a 22,22 0 1,0 -44,0 -->
+    <path
+        android:pathData="M78,100 a22,22 0 1,0 44,0 a22,22 0 1,0 -44,0"
+        android:fillColor="#FF0A0A0F" />
+
+    <!-- Bright neon center dot: r=12 -->
+    <!-- M 88,100  a 12,12 0 1,0 24,0  a 12,12 0 1,0 -24,0 -->
+    <path android:pathData="M88,100 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="100"
+                android:centerY="100"
+                android:gradientRadius="12"
+                android:startColor="#FFFF2D95"
+                android:endColor="#FF00E5FF" />
+        </aapt:attr>
+    </path>
+
+</vector>

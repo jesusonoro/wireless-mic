@@ -133,12 +133,12 @@ class AudioForegroundService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("evermic")
-            .setContentText("Streaming…")
+            .setContentTitle("EVERDJ")
+            .setContentText("Transmitiendo…")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setOngoing(true)
             .addAction(
-                Notification.Action.Builder(null, "Stop", stopPi).build()
+                Notification.Action.Builder(null, "Detener", stopPi).build()
             )
             .build()
     }

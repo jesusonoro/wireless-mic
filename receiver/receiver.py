@@ -22,6 +22,8 @@ import threading
 import collections
 import sys
 
+import math
+
 import numpy as np
 import sounddevice as sd
 import tkinter as tk
@@ -315,30 +317,42 @@ class Receiver:
 # ── Theme ────────────────────────────────────────────────────────────────────
 
 class Theme:
-    """Single source of truth for the dark UI palette."""
-    BG       = "#0e1018"   # window background
-    CARD     = "#171a26"   # raised card
-    CARD_HI  = "#1f2333"   # card hover / inset
-    STROKE   = "#272c3d"   # hairline border
-    FG       = "#e6e9f2"   # primary text
-    MUTED    = "#7c8499"   # secondary text
-    FAINT    = "#4a5167"   # tertiary / disabled
+    """Single source of truth for the neon DJ UI palette."""
+    BG       = "#0a0a0f"   # near-black window background
+    CARD     = "#15131c"   # raised card
+    CARD_HI  = "#211d2e"   # card hover / inset
+    STROKE   = "#3a2d55"   # violet-tinted hairline border
+    FG       = "#ffffff"   # primary text
+    MUTED    = "#9a86c4"   # violet-tinted secondary text
+    FAINT    = "#5b5170"   # tertiary / disabled
 
-    GREEN    = "#3ddc84"
-    AMBER    = "#fbbf24"
-    RED      = "#f87171"
-    BLUE     = "#5b8cff"
+    # Neon accent palette — cyan = good, magenta = warn, red = bad.
+    # Kept semantically meaningful for metric thresholds (green→cyan, amber→magenta)
+    # while delivering the neon club feel.
+    GREEN    = "#00E5FF"   # cyan — "good" / live signal
+    AMBER    = "#FF2D95"   # magenta — "warn"
+    RED      = "#FF1744"   # neon red — "bad"
+
+    MAGENTA  = "#FF2D95"
+    CYAN     = "#00E5FF"
+    VIOLET   = "#7C4DFF"
 
     # Pre-darkened "off" segment colors (Tkinter Canvas has no alpha).
-    GREEN_DIM = "#16301f"
-    AMBER_DIM = "#322713"
-    RED_DIM   = "#321b1b"
+    GREEN_DIM = "#003d47"  # dim cyan
+    AMBER_DIM = "#4a0a2a"  # dim magenta
+    RED_DIM   = "#3d0510"  # dim red
+
+    # Pulse pairs for the status dot animation (two shades, interpolated).
+    DOT_WAITING_A = "#4a3800"   # dim amber-ish (faint pulse when waiting)
+    DOT_WAITING_B = "#FF2D95"   # magenta burst
+    DOT_CONN_A    = "#004d5e"   # dim cyan
+    DOT_CONN_B    = "#00E5FF"   # full cyan
 
 
 # ── VU meter ─────────────────────────────────────────────────────────────────
 
 class VUMeter(tk.Canvas):
-    """A 28-segment green/amber/red VU meter with fast-attack / slow-release
+    """A 28-segment cyan/magenta/red VU meter with fast-attack / slow-release
     smoothing and a peak-hold dot. Visual twin of the sender's `_MicLevel`.
 
     It pulls the level itself, once per animation frame, from `level_source`
@@ -419,16 +433,30 @@ class VUMeter(tk.Canvas):
             self.itemconfigure(self._dot, fill=self._zone(frac, True))
 
 
+# ── Hex color lerp for pulse animation ────────────────────────────────────────
+
+def _lerp_hex(c_a: str, c_b: str, t: float) -> str:
+    """Linearly interpolate between two '#rrggbb' hex colors. t in [0,1]."""
+    ra, ga, ba = int(c_a[1:3], 16), int(c_a[3:5], 16), int(c_a[5:7], 16)
+    rb, gb, bb = int(c_b[1:3], 16), int(c_b[3:5], 16), int(c_b[5:7], 16)
+    r = int(ra + (rb - ra) * t)
+    g = int(ga + (gb - ga) * t)
+    b = int(ba + (bb - ba) * t)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 # ── UI ─────────────────────────────────────────────────────────────────────────
 
 class App:
     def __init__(self):
         self.receiver = Receiver()
         self.root = tk.Tk()
-        self.root.title("EVERMIC Receiver")
+        self.root.title("EVERDJ Receptor")
         self.root.geometry("440x600")
         self.root.minsize(380, 560)
         self.root.configure(bg=Theme.BG)
+        # Pulse animation state: phase in [0, 2π), stepped each _tick call.
+        self._pulse_phase = 0.0
         self._build()
         self._tick()
         self.root.after(200, self._toggle)   # auto-start listening — zero-click
@@ -455,9 +483,21 @@ class App:
         # ── Header: brand + connection pill ─────────────────────────────────────
         header = tk.Frame(self.root, bg=T.BG)
         header.pack(fill="x", padx=20, pady=(18, 4))
-        tk.Label(header, text="EVERMIC", font=self._title_f,
-                 bg=T.BG, fg=T.FG).pack(side="left")
-        tk.Label(header, text="  RECEIVER", font=self._cap_f,
+
+        # Faint shadow label layered behind the brand title for a neon-glow feel.
+        # Tkinter has no real glow/shadow, so we offset a dim copy by (2,2) px.
+        brand_frame = tk.Frame(header, bg=T.BG)
+        brand_frame.pack(side="left")
+        self._brand_shadow = tk.Label(brand_frame, text="EVERDJ",
+                                      font=self._title_f, bg=T.BG, fg=T.VIOLET)
+        self._brand_shadow.place(x=2, y=2)   # offset shadow — creates depth illusion
+        self._brand_lbl = tk.Label(brand_frame, text="EVERDJ",
+                                   font=self._title_f, bg=T.BG, fg=T.CYAN)
+        self._brand_lbl.pack()
+        # Reserve enough vertical space for the shadow offset.
+        brand_frame.config(height=self._title_f.metrics("linespace") + 4)
+
+        tk.Label(header, text="  RECEPTOR", font=self._cap_f,
                  bg=T.BG, fg=T.MUTED).pack(side="left", pady=(8, 0))
 
         pill = tk.Frame(header, bg=T.CARD)
@@ -465,7 +505,7 @@ class App:
         self._dot = tk.Label(pill, text="●", font=("Helvetica", 12),
                              bg=T.CARD, fg=T.FAINT)
         self._dot.pack(side="left", padx=(10, 5), pady=4)
-        self._status_lbl = tk.Label(pill, text="Idle", font=self._meta_f,
+        self._status_lbl = tk.Label(pill, text="Inactivo", font=self._meta_f,
                                     bg=T.CARD, fg=T.FG)
         self._status_lbl.pack(side="left", padx=(0, 12), pady=4)
 
@@ -473,7 +513,7 @@ class App:
         meter_card = self._card(self.root)
         head = tk.Frame(meter_card, bg=T.CARD)
         head.pack(fill="x", padx=16, pady=(12, 2))
-        tk.Label(head, text="≈  INCOMING AUDIO", font=self._lbl_f,
+        tk.Label(head, text="≈  AUDIO ENTRANTE", font=self._lbl_f,
                  bg=T.CARD, fg=T.MUTED).pack(side="left")
         self._db_lbl = tk.Label(head, text="—", font=self._meta_f,
                                 bg=T.CARD, fg=T.FAINT)
@@ -482,7 +522,7 @@ class App:
         self._meter = VUMeter(meter_card, self.receiver.take_level, height=44)
         self._meter.pack(fill="x", padx=16, pady=(6, 6))
 
-        self._meter_hint = tk.Label(meter_card, text="waiting for audio…",
+        self._meter_hint = tk.Label(meter_card, text="esperando audio…",
                                     font=self._cap_f, bg=T.CARD, fg=T.FAINT)
         self._meter_hint.pack(anchor="w", padx=16, pady=(0, 12))
 
@@ -491,9 +531,9 @@ class App:
         grid = tk.Frame(metrics_card, bg=T.CARD)
         grid.pack(fill="x", padx=8, pady=12)
         grid.columnconfigure((0, 1, 2), weight=1, uniform="m")
-        self._latency_lbl = self._metric_cell(grid, 0, "LATENCY")
-        self._loss_lbl    = self._metric_cell(grid, 1, "PKT LOSS")
-        self._buffer_lbl  = self._metric_cell(grid, 2, "BUFFER")
+        self._latency_lbl = self._metric_cell(grid, 0, "LATENCIA")
+        self._loss_lbl    = self._metric_cell(grid, 1, "PÉRDIDA")
+        self._buffer_lbl  = self._metric_cell(grid, 2, "BÚFER")
 
         # ── Controls card ───────────────────────────────────────────────────────
         ctrl = self._card(self.root)
@@ -503,7 +543,7 @@ class App:
         # Port
         row1 = tk.Frame(inner, bg=T.CARD)
         row1.pack(fill="x", pady=(0, 8))
-        tk.Label(row1, text="PORT", font=self._cap_f, bg=T.CARD, fg=T.MUTED,
+        tk.Label(row1, text="PUERTO", font=self._cap_f, bg=T.CARD, fg=T.MUTED,
                  width=8, anchor="w").pack(side="left")
         self._port_var = tk.StringVar(value=str(DEFAULT_PORT))
         tk.Entry(row1, textvariable=self._port_var, width=8, font=self._meta_f,
@@ -513,7 +553,7 @@ class App:
         # Volume
         row2 = tk.Frame(inner, bg=T.CARD)
         row2.pack(fill="x", pady=(0, 4))
-        tk.Label(row2, text="VOLUME", font=self._cap_f, bg=T.CARD, fg=T.MUTED,
+        tk.Label(row2, text="VOLUMEN", font=self._cap_f, bg=T.CARD, fg=T.MUTED,
                  width=8, anchor="w").pack(side="left")
         self._vol_var = tk.DoubleVar(value=1.0)
         self._vol_lbl = tk.Label(row2, text="1.0×", font=self._meta_f,
@@ -522,13 +562,13 @@ class App:
         tk.Scale(row2, variable=self._vol_var, from_=0.0, to=2.0,
                  resolution=0.05, orient="horizontal", showvalue=False,
                  bg=T.CARD, fg=T.FG, highlightthickness=0, troughcolor=T.CARD_HI,
-                 activebackground=T.GREEN, sliderrelief="flat", bd=0, width=12,
+                 activebackground=T.CYAN, sliderrelief="flat", bd=0, width=12,
                  command=self._on_volume).pack(side="left", fill="x", expand=True, padx=8)
 
         # Jitter buffer
         row3 = tk.Frame(inner, bg=T.CARD)
         row3.pack(fill="x")
-        tk.Label(row3, text="BUFFER", font=self._cap_f, bg=T.CARD, fg=T.MUTED,
+        tk.Label(row3, text="BÚFER", font=self._cap_f, bg=T.CARD, fg=T.MUTED,
                  width=8, anchor="w").pack(side="left")
         self._jitter_var = tk.IntVar(value=JITTER_MS)
         self._jitter_lbl = tk.Label(row3, text=f"{JITTER_MS} ms", font=self._meta_f,
@@ -537,14 +577,14 @@ class App:
         tk.Scale(row3, variable=self._jitter_var, from_=10, to=120,
                  resolution=10, orient="horizontal", showvalue=False,
                  bg=T.CARD, fg=T.FG, highlightthickness=0, troughcolor=T.CARD_HI,
-                 activebackground=T.BLUE, sliderrelief="flat", bd=0, width=12,
+                 activebackground=T.VIOLET, sliderrelief="flat", bd=0, width=12,
                  command=self._on_jitter).pack(side="left", fill="x", expand=True, padx=8)
 
         # ── Start/Stop button ─────────────────────────────────────────────────
-        self._btn_text = tk.StringVar(value="Start Listening")
+        self._btn_text = tk.StringVar(value="Empezar a escuchar")
         self._btn = tk.Button(self.root, textvariable=self._btn_text,
-                              command=self._toggle, bg=T.GREEN, fg="#08130c",
-                              activebackground=T.GREEN, activeforeground="#08130c",
+                              command=self._toggle, bg=T.CYAN, fg="#001f26",
+                              activebackground=T.CYAN, activeforeground="#001f26",
                               font=("Helvetica Neue", 13, "bold"),
                               relief="flat", bd=0, padx=20, pady=11, cursor="hand2")
         self._btn.pack(fill="x", padx=20, pady=(8, 6))
@@ -553,7 +593,7 @@ class App:
         ip = local_ip()
         host = socket.gethostname().split('.')[0]
         tk.Label(self.root,
-                 text=f"Broadcasting as {host} · {ip}\nthe phone finds this automatically",
+                 text=f"Transmitiendo como {host} · {ip}\nel teléfono lo encuentra solo",
                  font=self._cap_f, bg=T.BG, fg=T.FAINT, justify="center"
                  ).pack(pady=(2, 14))
 
@@ -588,14 +628,16 @@ class App:
             except ValueError:
                 port = DEFAULT_PORT
             self.receiver.start(port)
-            self._btn_text.set("Stop")
-            self._btn.config(bg=Theme.RED, fg="#1a0a0a", activebackground=Theme.RED)
-            self._status_lbl.config(text=f"Listening :{port}")
+            self._btn_text.set("Detener")
+            self._btn.config(bg=Theme.MAGENTA, fg="#1a0010",
+                             activebackground=Theme.MAGENTA, activeforeground="#1a0010")
+            self._status_lbl.config(text=f"Escuchando :{port}")
         else:
             self.receiver.stop()
-            self._btn_text.set("Start Listening")
-            self._btn.config(bg=Theme.GREEN, fg="#08130c", activebackground=Theme.GREEN)
-            self._status_lbl.config(text="Idle")
+            self._btn_text.set("Empezar a escuchar")
+            self._btn.config(bg=Theme.CYAN, fg="#001f26",
+                             activebackground=Theme.CYAN, activeforeground="#001f26")
+            self._status_lbl.config(text="Inactivo")
             self._dot.config(fg=Theme.FAINT)
 
     # ── Periodic UI refresh ───────────────────────────────────────────────────
@@ -605,11 +647,22 @@ class App:
         r = self.receiver
         if r.running:
             connected = r.connected
-            self._dot.config(fg=T.GREEN if connected else T.AMBER)
-            self._status_lbl.config(text="Connected ✓" if connected else "Waiting…")
+
+            # Pulse animation: advance phase by ~36° per 200 ms tick (~1.8 s cycle).
+            self._pulse_phase = (self._pulse_phase + 0.2) % (2 * math.pi)
+            # t oscillates smoothly 0→1→0 via a sine.
+            t = (math.sin(self._pulse_phase) + 1.0) / 2.0
+            if connected:
+                dot_color = _lerp_hex(T.DOT_CONN_A, T.DOT_CONN_B, t)
+                self._status_lbl.config(text="Conectado ✓")
+            else:
+                dot_color = _lerp_hex(T.DOT_WAITING_A, T.DOT_WAITING_B, t)
+                self._status_lbl.config(text="Esperando…")
+            self._dot.config(fg=dot_color)
+
             self._meter_hint.config(
-                text="live" if connected else "waiting for audio…",
-                fg=T.GREEN if connected else T.FAINT,
+                text="en vivo" if connected else "esperando audio…",
+                fg=T.CYAN if connected else T.FAINT,
             )
 
             # dB readout from the meter's smoothed level.
@@ -651,12 +704,12 @@ if __name__ == "__main__":
         port = int(sys.argv[idx + 1]) if idx >= 0 else DEFAULT_PORT
         r = Receiver()
         r.start(port)
-        print(f"EVERMIC receiver listening on UDP {local_ip()}:{port}. Ctrl-C to stop.")
-        print(f"Broadcasting discovery beacon on :{DISCOVERY_PORT} — sender auto-connects.")
+        print(f"EVERDJ receptor escuchando en UDP {local_ip()}:{port}. Ctrl-C para detener.")
+        print(f"Emitiendo baliza de descubrimiento en :{DISCOVERY_PORT} — el emisor se conecta solo.")
         try:
             while True:
                 time.sleep(1)
-                status = "connected" if r.connected else "waiting"
+                status = "conectado" if r.connected else "esperando"
                 print(f"[{status}] latency={r.latency_ms}ms  "
                       f"pkts={r.received}  dropped={r.dropped}  "
                       f"buffer={r.jitter.buffered_ms:.0f}ms")

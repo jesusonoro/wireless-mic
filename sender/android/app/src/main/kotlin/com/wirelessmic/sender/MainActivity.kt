@@ -13,9 +13,9 @@ class MainActivity : FlutterActivity() {
         if (nm.getNotificationChannel(AudioForegroundService.CHANNEL_ID) == null) {
             val channel = NotificationChannel(
                 AudioForegroundService.CHANNEL_ID,
-                "evermic microphone",
+                "EVERDJ",
                 NotificationManager.IMPORTANCE_LOW
-            ).apply { description = "Shown while evermic is streaming audio" }
+            ).apply { description = "Se muestra mientras EVERDJ transmite audio" }
             nm.createNotificationChannel(channel)
         }
     }
