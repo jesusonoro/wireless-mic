@@ -1,18 +1,28 @@
 package com.wirelessmic.sender
 
+import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.media.projection.MediaProjectionManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import io.flutter.embedding.engine.plugins.FlutterPlugin
+import io.flutter.embedding.engine.plugins.activity.ActivityAware
+import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.PluginRegistry
 
-class AudioStreamPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventChannel.StreamHandler {
+class AudioStreamPlugin :
+    FlutterPlugin,
+    MethodChannel.MethodCallHandler,
+    EventChannel.StreamHandler,
+    ActivityAware {
 
     private lateinit var methodChannel: MethodChannel
     private lateinit var eventChannel: EventChannel
@@ -22,6 +32,18 @@ class AudioStreamPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
     private var isBound = false
     private var eventSink: EventChannel.EventSink? = null
     private var multicastLock: WifiManager.MulticastLock? = null
+
+    // Activity binding for MediaProjection consent dialog
+    private var activityBinding: ActivityPluginBinding? = null
+
+    // Stashed DJ args while we wait for the consent result
+    private var pendingDjHost: String? = null
+    private var pendingDjPort: Int = 7355
+
+    companion object {
+        private const val REQ_MEDIA_PROJECTION = 1001
+        private const val TAG = "evermic"
+    }
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
@@ -41,6 +63,40 @@ class AudioStreamPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
         }
     }
 
+    private val activityResultListener = PluginRegistry.ActivityResultListener { requestCode, resultCode, data ->
+        if (requestCode != REQ_MEDIA_PROJECTION) return@ActivityResultListener false
+        if (resultCode == Activity.RESULT_OK && data != null) {
+            val host = pendingDjHost
+            val port = pendingDjPort
+            if (host == null) {
+                Log.e(TAG, "startDj: projection returned OK but pendingDjHost is null")
+            } else {
+                val intent = Intent(appContext, AudioForegroundService::class.java).apply {
+                    putExtra(AudioForegroundService.EXTRA_HOST, host)
+                    putExtra(AudioForegroundService.EXTRA_PORT, port)
+                    putExtra(AudioForegroundService.EXTRA_MODE, "dj")
+                    putExtra(AudioForegroundService.EXTRA_PROJECTION_RESULT_CODE, resultCode)
+                    putExtra(AudioForegroundService.EXTRA_PROJECTION_DATA, data)
+                }
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        appContext.startForegroundService(intent)
+                    } else {
+                        appContext.startService(intent)
+                    }
+                    val bindIntent = Intent(appContext, AudioForegroundService::class.java)
+                    appContext.bindService(bindIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+                } catch (e: Exception) {
+                    Log.e(TAG, "startDj service start failed", e)
+                }
+            }
+        } else {
+            Log.i(TAG, "startDj: user denied MediaProjection consent (resultCode=$resultCode)")
+        }
+        pendingDjHost = null
+        true
+    }
+
     // ── FlutterPlugin ─────────────────────────────────────────────────────────
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -56,6 +112,28 @@ class AudioStreamPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
         eventChannel.setStreamHandler(null)
         releaseMulticastLock()
         unbind()
+    }
+
+    // ── ActivityAware ─────────────────────────────────────────────────────────
+
+    override fun onAttachedToActivity(binding: ActivityPluginBinding) {
+        activityBinding = binding
+        binding.addActivityResultListener(activityResultListener)
+    }
+
+    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
+        activityBinding = binding
+        binding.addActivityResultListener(activityResultListener)
+    }
+
+    override fun onDetachedFromActivityForConfigChanges() {
+        activityBinding?.removeActivityResultListener(activityResultListener)
+        activityBinding = null
+    }
+
+    override fun onDetachedFromActivity() {
+        activityBinding?.removeActivityResultListener(activityResultListener)
+        activityBinding = null
     }
 
     // ── Multicast/broadcast lock (needed to receive discovery beacons) ─────────
@@ -84,6 +162,13 @@ class AudioStreamPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
                 }
                 val port = call.argument<Int>("port") ?: 7355
                 startService(host, port, result)
+            }
+            "startDj" -> {
+                val host = call.argument<String>("host") ?: run {
+                    result.error("INVALID_ARG", "host is required", null); return
+                }
+                val port = call.argument<Int>("port") ?: 7355
+                startDj(host, port, result)
             }
             "stop" -> {
                 stopService()
@@ -117,6 +202,7 @@ class AudioStreamPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
         val intent = Intent(appContext, AudioForegroundService::class.java).apply {
             putExtra(AudioForegroundService.EXTRA_HOST, host)
             putExtra(AudioForegroundService.EXTRA_PORT, port)
+            putExtra(AudioForegroundService.EXTRA_MODE, "mic")
         }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -131,6 +217,19 @@ class AudioStreamPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
         } catch (e: Exception) {
             result.error("START_FAILED", e.message, null)
         }
+    }
+
+    private fun startDj(host: String, port: Int, result: MethodChannel.Result) {
+        val binding = activityBinding ?: run {
+            result.error("NO_ACTIVITY", "Activity not attached; cannot show MediaProjection consent", null)
+            return
+        }
+        pendingDjHost = host
+        pendingDjPort = port
+        val mgr = appContext.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        binding.activity.startActivityForResult(mgr.createScreenCaptureIntent(), REQ_MEDIA_PROJECTION)
+        // Reply immediately — the service starts (or logs error) asynchronously in activityResultListener.
+        result.success(null)
     }
 
     private fun stopService() {
