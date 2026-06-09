@@ -251,6 +251,7 @@ class AudioForegroundService : Service() {
             // the playback AudioRecord; without it getMediaProjection throws.
             val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val mp = mpManager.getMediaProjection(resultCode, projectionData)
+                ?: throw IllegalStateException("getMediaProjection returned null")
             mp.registerCallback(object : MediaProjection.Callback() {}, Handler(Looper.getMainLooper()))
             mediaProjection = mp
 
