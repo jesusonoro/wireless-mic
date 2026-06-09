@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer neon ring: filled circle r=33, gradient magenta→cyan→violet -->
+    <!-- Circle: M 21,54  a 33,33 0 1,0 66,0  a 33,33 0 1,0 -66,0 -->
+    <path android:pathData="M21,54 a33,33 0 1,0 66,0 a33,33 0 1,0 -66,0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="21"
+                android:startY="54"
+                android:endX="87"
+                android:endY="54"
+                android:startColor="#FFFF2D95"
+                android:centerColor="#FF00E5FF"
+                android:endColor="#FF7C4DFF" />
+        </aapt:attr>
+    </path>
+
+    <!-- Dark disc body (punches out center, leaving only the outer ring ~5dp wide) -->
+    <!-- Circle r=28: M 26,54  a 28,28 0 1,0 56,0  a 28,28 0 1,0 -56,0 -->
+    <path
+        android:pathData="M26,54 a28,28 0 1,0 56,0 a28,28 0 1,0 -56,0"
+        android:fillColor="#FF0A0A0F" />
+
+    <!-- Groove ring 1 outer: r=22 filled with groove color -->
+    <!-- Circle r=22: M 32,54  a 22,22 0 1,0 44,0  a 22,22 0 1,0 -44,0 -->
+    <path
+        android:pathData="M32,54 a22,22 0 1,0 44,0 a22,22 0 1,0 -44,0"
+        android:fillColor="#FF1A1A24" />
+
+    <!-- Groove ring 1 inner punch (leaves ~1.5dp stroke): r=20 -->
+    <!-- Circle r=20: M 34,54  a 20,20 0 1,0 40,0  a 20,20 0 1,0 -40,0 -->
+    <path
+        android:pathData="M34,54 a20,20 0 1,0 40,0 a20,20 0 1,0 -40,0"
+        android:fillColor="#FF0A0A0F" />
+
+    <!-- Groove ring 2 outer: r=16 -->
+    <!-- Circle r=16: M 38,54  a 16,16 0 1,0 32,0  a 16,16 0 1,0 -32,0 -->
+    <path
+        android:pathData="M38,54 a16,16 0 1,0 32,0 a16,16 0 1,0 -32,0"
+        android:fillColor="#FF1A1A24" />
+
+    <!-- Groove ring 2 inner punch: r=14.5 -->
+    <!-- Circle r=14.5: M 39.5,54  a 14.5,14.5 0 1,0 29,0  a 14.5,14.5 0 1,0 -29,0 -->
+    <path
+        android:pathData="M39.5,54 a14.5,14.5 0 1,0 29,0 a14.5,14.5 0 1,0 -29,0"
+        android:fillColor="#FF0A0A0F" />
+
+    <!-- Center hole background (dark): r=10 -->
+    <!-- Circle r=10: M 44,54  a 10,10 0 1,0 20,0  a 10,10 0 1,0 -20,0 -->
+    <path
+        android:pathData="M44,54 a10,10 0 1,0 20,0 a10,10 0 1,0 -20,0"
+        android:fillColor="#FF0A0A0F" />
+
+    <!-- Bright neon center dot: r=5, gradient magenta→cyan -->
+    <!-- Circle r=5: M 49,54  a 5,5 0 1,0 10,0  a 5,5 0 1,0 -10,0 -->
+    <path android:pathData="M49,54 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54"
+                android:centerY="54"
+                android:gradientRadius="5"
+                android:startColor="#FFFF2D95"
+                android:endColor="#FF00E5FF" />
+        </aapt:attr>
+    </path>
+
+</vector>
