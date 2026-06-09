@@ -28,10 +28,10 @@ class _SenderScreenState extends State<SenderScreen> {
   bool _connecting = false;
   bool _userStopped = false;   // after a manual Stop, don't auto-reconnect
   bool _showManual = false;
-  String _status = 'Ready';
+  String _status = 'Listo';
   int _packetsSent = 0;
   double _level = 0;           // input level 0..1 for the VU meter
-  String _myIp = 'loading…';
+  String _myIp = 'cargando…';
   DiscoveredReceiver? _receiver;
   String? _ipError;
   String? _portError;
@@ -55,7 +55,7 @@ class _SenderScreenState extends State<SenderScreen> {
 
   Future<void> _loadIp() async {
     final ip = await NetworkInfo().getWifiIP();
-    if (mounted) setState(() => _myIp = ip ?? 'unknown');
+    if (mounted) setState(() => _myIp = ip ?? 'desconocida');
   }
 
   Future<void> _startDiscovery() async {
@@ -83,12 +83,12 @@ class _SenderScreenState extends State<SenderScreen> {
   String _friendlyError(Object e) {
     final msg = e.toString();
     if (msg.contains('SocketException') || msg.contains('NetworkUnreachable')) {
-      return "Can't reach the receiver. Check Wi-Fi.";
+      return 'No se encuentra el receptor. Revisa el Wi-Fi.';
     }
     if (msg.toLowerCase().contains('permission')) {
-      return 'Microphone permission required.';
+      return 'Se requiere permiso de micrófono.';
     }
-    return 'Something went wrong. Try again.';
+    return 'Algo salió mal. Inténtalo de nuevo.';
   }
 
   Future<void> _connect(DiscoveredReceiver r) async {
@@ -100,7 +100,7 @@ class _SenderScreenState extends State<SenderScreen> {
       setState(() {
         _connecting = false;
         _userStopped = true;
-        _status = 'Microphone permission denied';
+        _status = 'Permiso de micrófono denegado';
       });
       return;
     }
@@ -116,7 +116,7 @@ class _SenderScreenState extends State<SenderScreen> {
           _streaming = true;
           _connecting = false;
           _packetsSent = 0;
-          _status = 'Starting DJ — accept the screen-capture prompt';
+          _status = 'Iniciando DJ — acepta el permiso de captura de pantalla';
         });
       } else {
         await _service.startStreaming(host: r.host, port: r.port);
@@ -125,7 +125,7 @@ class _SenderScreenState extends State<SenderScreen> {
           _streaming = true;
           _connecting = false;
           _packetsSent = 0;
-          _status = 'Connected to ${r.name}';
+          _status = 'Conectado a ${r.name}';
         });
       }
     } on Exception catch (e) {
@@ -142,7 +142,7 @@ class _SenderScreenState extends State<SenderScreen> {
     setState(() {
       _streaming = false;
       _userStopped = true;            // wait for an explicit Start before reconnecting
-      _status = 'Stopped';
+      _status = 'Detenido';
       _packetsSent = 0;
       _level = 0;
     });
@@ -160,12 +160,12 @@ class _SenderScreenState extends State<SenderScreen> {
   Future<void> _connectManual() async {
     final host = _hostCtrl.text.trim();
     if (!RegExp(_ipPattern).hasMatch(host)) {
-      setState(() => _ipError = 'Enter a valid IPv4 (e.g. 192.168.1.100)');
+      setState(() => _ipError = 'Introduce una IPv4 válida (ej. 192.168.1.100)');
       return;
     }
     final port = int.tryParse(_portCtrl.text);
     if (port == null || port < 1 || port > 65535) {
-      setState(() => _portError = 'Port must be 1–65535');
+      setState(() => _portError = 'El puerto debe estar entre 1 y 65535');
       return;
     }
     setState(() {
@@ -183,7 +183,7 @@ class _SenderScreenState extends State<SenderScreen> {
     return Scaffold(
       backgroundColor: cs.surface,
       appBar: AppBar(
-        title: const Text('EVERMIC'),
+        title: const Text('EVERDJ'),
         backgroundColor: cs.surfaceContainerHighest,
       ),
       body: SafeArea(
@@ -200,7 +200,7 @@ class _SenderScreenState extends State<SenderScreen> {
               ),
               const SizedBox(height: 12),
               Text(
-                'Phone Wi-Fi IP: $_myIp',
+                'IP del teléfono: $_myIp',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodySmall,
               ),
@@ -214,8 +214,8 @@ class _SenderScreenState extends State<SenderScreen> {
                 const SizedBox(height: 16),
                 _MicLevel(
                   level: _level,
-                  label: isDj ? 'OUTPUT' : 'MIC INPUT',
-                  hint: isDj ? 'play music + talk…' : 'speak into the phone…',
+                  label: isDj ? 'SALIDA' : 'ENTRADA MIC',
+                  hint: isDj ? 'pon música y habla…' : 'habla al teléfono…',
                 ),
               ],
               const SizedBox(height: 16),
@@ -225,7 +225,7 @@ class _SenderScreenState extends State<SenderScreen> {
                   ButtonSegment(
                     value: CaptureMode.mic,
                     icon: Icon(Icons.mic),
-                    label: Text('Mic'),
+                    label: Text('Micrófono'),
                   ),
                   ButtonSegment(
                     value: CaptureMode.dj,
@@ -246,10 +246,10 @@ class _SenderScreenState extends State<SenderScreen> {
                 icon: Icon(_streaming ? Icons.stop : (isDj ? Icons.album : Icons.mic)),
                 label: Text(
                   _streaming
-                      ? (isDj ? 'Stop DJ' : 'Stop Streaming')
+                      ? (isDj ? 'Detener DJ' : 'Detener')
                       : _receiver != null
-                          ? (isDj ? 'Start DJ' : 'Start Streaming')
-                          : 'Searching…',
+                          ? (isDj ? 'Empezar DJ' : 'Empezar')
+                          : 'Buscando…',
                 ),
                 style: FilledButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),
@@ -260,12 +260,12 @@ class _SenderScreenState extends State<SenderScreen> {
               const SizedBox(height: 8),
               TextButton(
                 onPressed: () => setState(() => _showManual = !_showManual),
-                child: Text(_showManual ? 'Hide manual setup' : 'Connect manually'),
+                child: Text(_showManual ? 'Ocultar conexión manual' : 'Conexión manual'),
               ),
               if (_showManual) _buildManual(),
               const SizedBox(height: 12),
               Text(
-                'Both devices must be on the same Wi-Fi.\nThe app finds the receiver automatically.',
+                'Ambos dispositivos deben estar en la misma red Wi-Fi.\nLa app encuentra el receptor automáticamente.',
                 textAlign: TextAlign.center,
                 style: Theme.of(context)
                     .textTheme
@@ -289,7 +289,7 @@ class _SenderScreenState extends State<SenderScreen> {
             controller: _hostCtrl,
             enabled: !_streaming,
             decoration: InputDecoration(
-              labelText: 'Receiver IP Address',
+              labelText: 'IP del receptor',
               hintText: '192.168.1.100',
               border: const OutlineInputBorder(),
               prefixIcon: const Icon(Icons.computer),
@@ -302,7 +302,7 @@ class _SenderScreenState extends State<SenderScreen> {
             controller: _portCtrl,
             enabled: !_streaming,
             decoration: InputDecoration(
-              labelText: 'UDP Port',
+              labelText: 'Puerto UDP',
               border: const OutlineInputBorder(),
               prefixIcon: const Icon(Icons.settings_ethernet),
               errorText: _portError,
@@ -312,7 +312,7 @@ class _SenderScreenState extends State<SenderScreen> {
           const SizedBox(height: 12),
           OutlinedButton(
             onPressed: _streaming ? null : _connectManual,
-            child: const Text('Connect'),
+            child: const Text('Conectar'),
           ),
         ],
       ),
@@ -346,18 +346,18 @@ class _DiscoveryBanner extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     Widget content;
     if (streaming && receiver != null) {
-      content = Text('Connected to ${receiver!.name}',
+      content = Text('Conectado a ${receiver!.name}',
           style: const TextStyle(color: Colors.greenAccent));
     } else if (connecting) {
-      content = const _SpinnerRow(text: 'Connecting…');
+      content = const _SpinnerRow(text: 'Conectando…');
     } else if (receiver != null) {
       content = Text(
-        'Found ${receiver!.name}  ·  ${receiver!.host}',
+        'Encontrado ${receiver!.name}  ·  ${receiver!.host}',
         textAlign: TextAlign.center,
         style: TextStyle(color: cs.onSurface),
       );
     } else {
-      content = const _SpinnerRow(text: 'Searching for a receiver on Wi-Fi…');
+      content = const _SpinnerRow(text: 'Buscando un receptor en la red…');
     }
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
@@ -525,7 +525,7 @@ class _StatusCard extends StatelessWidget {
             if (streaming) ...[
               const SizedBox(height: 4),
               Text(
-                '$packets packets sent  ·  ${(packets * (mode == CaptureMode.dj ? 5 : 10) / 1000).toStringAsFixed(1)}s',
+                '$packets paquetes  ·  ${(packets * (mode == CaptureMode.dj ? 5 : 10) / 1000).toStringAsFixed(1)}s',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
